@@ -1,0 +1,5 @@
+discord.py-self
+requests
+flask
+python-dotenv
+pyinstaller
