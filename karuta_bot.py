@@ -8,13 +8,18 @@ import os
 import requests
 import hashlib
 import uuid
+import random
 from datetime import datetime, timedelta
 
 # ─────────────────────────────────────────────
 #  Config
 # ─────────────────────────────────────────────
-SERVER_URL = "https://karutabot-production.up.railway.app"
+SERVER_URL  = "https://karutabot-production.up.railway.app"
 CONFIG_FILE = "config.json"
+
+MAX_DROPS_PER_DAY  = 40
+DROP_COOLDOWN_MIN  = 30
+DROP_JITTER_MAX    = 6
 
 C = {
     "bg":      "#2b2d31",
@@ -24,6 +29,7 @@ C = {
     "accent2": "#4752c4",
     "green":   "#23a55a",
     "red":     "#f23f43",
+    "yellow":  "#f0b232",
     "text":    "#dbdee1",
     "muted":   "#949ba4",
     "white":   "#ffffff",
@@ -36,7 +42,7 @@ def load_config():
     if os.path.exists(CONFIG_FILE):
         with open(CONFIG_FILE) as f:
             return json.load(f)
-    return {"token": "", "channel_id": ""}
+    return {"token": "", "channel_id": "", "max_drops": MAX_DROPS_PER_DAY}
 
 def save_config(data):
     with open(CONFIG_FILE, "w") as f:
@@ -64,7 +70,6 @@ def start_heartbeat(key):
     while True:
         try:
             r = requests.post(f"{SERVER_URL}/heartbeat", json={"key": key, "hwid": hwid}, timeout=5)
-            # If key was revoked mid-session, force close
             if not r.json().get("success"):
                 os._exit(0)
         except:
@@ -135,27 +140,28 @@ class KarutaApp:
     def __init__(self, root):
         self.root = root
         self.root.title("Karuta Bot")
-        self.root.geometry("520x620")
+        self.root.geometry("520x700")
         self.root.resizable(False, False)
         self.root.configure(bg=C["bg"])
 
-        self.config = load_config()
-        self.client = None
-        self.loop = None
-        self.bot_thread = None
-        self.running = False
+        self.config         = load_config()
+        self.client         = None
+        self.loop           = None
+        self.bot_thread     = None
+        self.running        = False
         self.next_drop_time = None
+        self.drops_today    = 0
+        self.last_reset     = datetime.now().date()
 
         self._build_ui()
 
     def _build_ui(self):
-        # Title
         tk.Label(self.root, text="🃏 Karuta Bot", font=("Helvetica", 18, "bold"),
                  bg=C["bg"], fg=C["text"]).pack(pady=(16, 2))
-        tk.Label(self.root, text="Auto drop every 30 minutes",
+        tk.Label(self.root, text="Auto drop with randomized timing",
                  font=("Helvetica", 10), bg=C["bg"], fg=C["muted"]).pack(pady=(0, 12))
 
-        # Settings card
+        # ── Settings card ──
         sf = tk.Frame(self.root, bg=C["card"])
         sf.pack(fill="x", padx=20, pady=6)
 
@@ -175,13 +181,36 @@ class KarutaApp:
                  relief="flat", font=("Helvetica", 10), width=42
                  ).grid(row=3, column=0, padx=12, pady=(0,12), ipady=6)
 
-        # Status card
+        # ── Options card ──
+        opts = tk.Frame(self.root, bg=C["card"])
+        opts.pack(fill="x", padx=20, pady=6)
+
+        tk.Label(opts, text="MAX DROPS / DAY", font=("Helvetica", 8, "bold"),
+                 bg=C["card"], fg=C["muted"]).grid(row=0, column=0, sticky="w", padx=12, pady=(10,2))
+        self.max_drops_var = tk.IntVar(value=self.config.get("max_drops", MAX_DROPS_PER_DAY))
+        tk.Spinbox(opts, from_=1, to=48, textvariable=self.max_drops_var,
+                   width=5, bg=C["dark"], fg=C["text"],
+                   relief="flat", font=("Helvetica", 10)
+                   ).grid(row=1, column=0, padx=12, pady=(0,10), sticky="w", ipady=4)
+
+        tk.Label(opts, text="JITTER (extra mins 0–N)", font=("Helvetica", 8, "bold"),
+                 bg=C["card"], fg=C["muted"]).grid(row=0, column=1, sticky="w", padx=12, pady=(10,2))
+        self.jitter_var = tk.IntVar(value=DROP_JITTER_MAX)
+        tk.Spinbox(opts, from_=0, to=30, textvariable=self.jitter_var,
+                   width=5, bg=C["dark"], fg=C["text"],
+                   relief="flat", font=("Helvetica", 10)
+                   ).grid(row=1, column=1, padx=12, pady=(0,10), sticky="w", ipady=4)
+
+        tk.Label(opts, text="drops fire 30 to 30+N mins apart",
+                 font=("Helvetica", 8), bg=C["card"], fg=C["muted"]
+                 ).grid(row=1, column=2, padx=8, sticky="w")
+
+        # ── Status card ──
         stf = tk.Frame(self.root, bg=C["card"])
         stf.pack(fill="x", padx=20, pady=6)
 
         tk.Label(stf, text="STATUS", font=("Helvetica", 8, "bold"),
                  bg=C["card"], fg=C["muted"]).grid(row=0, column=0, sticky="w", padx=12, pady=(10,2))
-
         self.status_dot = tk.Label(stf, text="⬤", font=("Helvetica", 10),
                                     bg=C["card"], fg=C["red"])
         self.status_dot.grid(row=1, column=0, sticky="w", padx=12)
@@ -194,9 +223,15 @@ class KarutaApp:
         self.timer_label = tk.Label(stf, text="--:--",
                                      font=("Helvetica", 14, "bold"), bg=C["card"], fg=C["accent"])
         self.timer_label.grid(row=1, column=2, padx=20)
+
+        tk.Label(stf, text="DROPS TODAY", font=("Helvetica", 8, "bold"),
+                 bg=C["card"], fg=C["muted"]).grid(row=0, column=3, sticky="w", padx=20, pady=(10,2))
+        self.drops_label = tk.Label(stf, text=f"0 / {MAX_DROPS_PER_DAY}",
+                                     font=("Helvetica", 14, "bold"), bg=C["card"], fg=C["green"])
+        self.drops_label.grid(row=1, column=3, padx=20)
         tk.Label(stf, text="", bg=C["card"]).grid(row=2, pady=6)
 
-        # Buttons
+        # ── Buttons ──
         bf = tk.Frame(self.root, bg=C["bg"])
         bf.pack(pady=10)
 
@@ -224,7 +259,7 @@ class KarutaApp:
                                    state="disabled", command=self.manual_drop)
         self.drop_btn.grid(row=0, column=2, padx=8)
 
-        # Log
+        # ── Log ──
         tk.Label(self.root, text="ACTIVITY LOG", font=("Helvetica", 8, "bold"),
                  bg=C["bg"], fg=C["muted"]).pack(anchor="w", padx=22, pady=(6,2))
 
@@ -236,6 +271,7 @@ class KarutaApp:
 
         self._update_timer()
 
+    # ── Helpers ───────────────────────────────
     def log(self, message):
         timestamp = datetime.now().strftime("%H:%M:%S")
         self.log_box.config(state="normal")
@@ -246,6 +282,23 @@ class KarutaApp:
     def set_status(self, text, online=False):
         self.status_label.config(text=text)
         self.status_dot.config(fg=C["green"] if online else C["red"])
+
+    def _update_drops_label(self):
+        limit = self.max_drops_var.get()
+        color = C["green"] if self.drops_today < limit else C["red"]
+        self.drops_label.config(text=f"{self.drops_today} / {limit}", fg=color)
+
+    def _reset_daily_if_needed(self):
+        today = datetime.now().date()
+        if today != self.last_reset:
+            self.drops_today = 0
+            self.last_reset  = today
+            self.root.after(0, lambda: self.log("🔄 Daily drop counter reset."))
+            self.root.after(0, self._update_drops_label)
+
+    def _next_delay(self):
+        jitter = random.uniform(0, self.jitter_var.get() * 60)
+        return DROP_COOLDOWN_MIN * 60 + jitter
 
     def _update_timer(self):
         if self.next_drop_time and self.running:
@@ -259,14 +312,16 @@ class KarutaApp:
             self.timer_label.config(text="--:--")
         self.root.after(1000, self._update_timer)
 
+    # ── Bot control ───────────────────────────
     def start_bot(self):
-        token = self.token_var.get().strip()
+        token      = self.token_var.get().strip()
         channel_id = self.channel_var.get().strip()
         if not token or not channel_id:
             self.log("⚠ Please enter both Token and Channel ID.")
             return
 
-        save_config({"token": token, "channel_id": channel_id})
+        save_config({"token": token, "channel_id": channel_id,
+                     "max_drops": self.max_drops_var.get()})
         self.running = True
         self.start_btn.config(state="disabled")
         self.stop_btn.config(state="normal")
@@ -295,6 +350,7 @@ class KarutaApp:
         if self.client and self.loop:
             asyncio.run_coroutine_threadsafe(self._do_drop(), self.loop)
 
+    # ── Discord logic ─────────────────────────
     def _run_discord_loop(self, token, channel_id):
         self.loop = asyncio.new_event_loop()
         asyncio.set_event_loop(self.loop)
@@ -317,19 +373,38 @@ class KarutaApp:
 
     async def _drop_loop(self, channel_id):
         while self.running:
+            self._reset_daily_if_needed()
+
+            if self.drops_today >= self.max_drops_var.get():
+                self.root.after(0, lambda: self.log(
+                    f"⚠ Daily limit of {self.max_drops_var.get()} drops reached. Waiting..."))
+                await asyncio.sleep(10 * 60)
+                continue
+
             await self._do_drop()
-            self.next_drop_time = datetime.now() + timedelta(minutes=30)
-            await asyncio.sleep(30 * 60)
+
+            delay = self._next_delay()
+            self.next_drop_time = datetime.now() + timedelta(seconds=delay)
+            mins = int(delay // 60)
+            secs = int(delay % 60)
+            self.root.after(0, lambda m=mins, s=secs: self.log(
+                f"⏱ Next drop in {m}m {s}s"))
+            await asyncio.sleep(delay)
 
     async def _do_drop(self):
+        self._reset_daily_if_needed()
+        if self.drops_today >= self.max_drops_var.get():
+            return
         try:
             channel = self.client.get_channel(int(self.channel_var.get().strip()))
             if not channel:
                 self.root.after(0, lambda: self.log("❌ Channel not found. Check your Channel ID."))
                 return
             await channel.send("k!drop")
-            self.root.after(0, lambda: self.log("🃏 Dropped cards! (k!drop sent)"))
-            self.next_drop_time = datetime.now() + timedelta(minutes=30)
+            self.drops_today += 1
+            self.root.after(0, lambda: self.log(
+                f"🃏 Dropped! ({self.drops_today}/{self.max_drops_var.get()} today)"))
+            self.root.after(0, self._update_drops_label)
         except Exception as e:
             self.root.after(0, lambda err=e: self.log(f"❌ Drop failed: {err}"))
 
