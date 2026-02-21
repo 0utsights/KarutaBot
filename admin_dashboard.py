@@ -9,7 +9,7 @@ from datetime import datetime
 # ─────────────────────────────────────────────
 #  CONFIG — change these to match your server
 # ─────────────────────────────────────────────
-SERVER_URL = "http://localhost:5000"
+SERVER_URL = "https://karutabot-production.up.railway.app"
 ADMIN_PASSWORD = "changeme"
 
 # ─────────────────────────────────────────────
