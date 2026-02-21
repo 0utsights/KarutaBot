@@ -13,7 +13,7 @@ from datetime import datetime, timedelta
 # ─────────────────────────────────────────────
 #  Config
 # ─────────────────────────────────────────────
-SERVER_URL = "http://YOUR_SERVER_IP:5000"  # ← change this to your Railway/server URL
+SERVER_URL = "https://karutabot-production.up.railway.app"
 CONFIG_FILE = "config.json"
 
 C = {
