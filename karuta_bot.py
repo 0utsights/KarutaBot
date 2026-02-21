@@ -174,6 +174,24 @@ class KarutaApp:
                   activeforeground=C["white"], relief="flat",
                   padx=8, pady=1, cursor="hand2",
                   command=self.show_token_help).pack(side="left", padx=(10,0))
+
+        # Token expiry note with hoverable "why?"
+        token_note_row = tk.Frame(sf, bg=C["card"])
+        token_note_row.grid(row=0, column=1, sticky="w", padx=(0,12), pady=(10,2))
+        tk.Label(token_note_row, text="Token is saved & lasts until you change your password.",
+                 font=("Helvetica", 8), bg=C["card"], fg=C["muted"]).pack(side="left")
+        why_btn = tk.Label(token_note_row, text=" why?", font=("Helvetica", 8, "underline"),
+                           bg=C["card"], fg=C["accent"], cursor="hand2")
+        why_btn.pack(side="left")
+        self._add_tooltip(why_btn,
+            "Discord tokens don't expire on their own.\n"
+            "They only reset if you:\n"
+            "• Change your password\n"
+            "• Enable or disable 2FA\n"
+            "• Click 'Log out of all devices'\n"
+            "• Get suspended by Discord\n\n"
+            "If your token stops working, just grab\n"
+            "a new one using the ❓ button above.")
         self.token_var = tk.StringVar(value=self.config.get("token", ""))
         tk.Entry(sf, textvariable=self.token_var, show="•",
                  bg=C["dark"], fg=C["text"], insertbackground=C["text"],
@@ -279,6 +297,33 @@ class KarutaApp:
         self._update_timer()
 
     # ── Helpers ───────────────────────────────
+    def _add_tooltip(self, widget, text):
+        """Show a tooltip popup on hover."""
+        tooltip = None
+
+        def on_enter(e):
+            nonlocal tooltip
+            x = widget.winfo_rootx() + 20
+            y = widget.winfo_rooty() + 20
+            tooltip = tk.Toplevel(widget)
+            tooltip.wm_overrideredirect(True)
+            tooltip.wm_geometry(f"+{x}+{y}")
+            frame = tk.Frame(tooltip, bg=C["card"], bd=1, relief="solid",
+                             highlightbackground=C["accent"], highlightthickness=1)
+            frame.pack()
+            tk.Label(frame, text=text, font=("Helvetica", 9),
+                     bg=C["card"], fg=C["text"],
+                     justify="left", padx=10, pady=8).pack()
+
+        def on_leave(e):
+            nonlocal tooltip
+            if tooltip:
+                tooltip.destroy()
+                tooltip = None
+
+        widget.bind("<Enter>", on_enter)
+        widget.bind("<Leave>", on_leave)
+
     def show_token_help(self):
         import webbrowser
         win = tk.Toplevel(self.root)
@@ -409,9 +454,7 @@ class KarutaApp:
         self.loop = asyncio.new_event_loop()
         asyncio.set_event_loop(self.loop)
 
-        intents = discord.Intents.default()
-        intents.message_content = True
-        self.client = discord.Client(intents=intents)
+        self.client = discord.Client()
 
         @self.client.event
         async def on_ready():
@@ -419,11 +462,21 @@ class KarutaApp:
             self.root.after(0, lambda: self.log(f"✅ Logged in as {self.client.user.name}"))
             self.loop.create_task(self._drop_loop(channel_id))
 
-        try:
-            self.loop.run_until_complete(self.client.start(token, bot=False))
-        except Exception as e:
-            self.root.after(0, lambda: self.log(f"❌ Error: {e}"))
-            self.root.after(0, lambda: self.set_status("Error", False))
+        async def runner():
+            try:
+                async with self.client:
+                    await self.client.start(token)
+            except discord.LoginFailure:
+                self.root.after(0, lambda: self.log("❌ Invalid token — please update your Discord token."))
+                self.root.after(0, lambda: self.set_status("Invalid Token", False))
+                self.root.after(0, self.stop_bot)
+            except Exception as e:
+                import traceback
+                err = traceback.format_exc()
+                self.root.after(0, lambda: self.log(f"❌ Error: {err}"))
+                self.root.after(0, lambda: self.set_status("Error", False))
+
+        self.loop.run_until_complete(runner())
 
     async def _drop_loop(self, channel_id):
         while self.running:
@@ -454,13 +507,153 @@ class KarutaApp:
             if not channel:
                 self.root.after(0, lambda: self.log("❌ Channel not found. Check your Channel ID."))
                 return
+
             await channel.send("k!drop")
             self.drops_today += 1
             self.root.after(0, lambda: self.log(
                 f"🃏 Dropped! ({self.drops_today}/{self.max_drops_var.get()} today)"))
             self.root.after(0, self._update_drops_label)
+
+            # Wait for Karuta to respond with the drop embed
+            drop_msg = await self._wait_for_drop(channel)
+            if not drop_msg:
+                self.root.after(0, lambda: self.log("⚠ Couldn't find drop message, skipping grab."))
+                return
+
+            # Parse card names and prints from the embed
+            cards = self._parse_drop_embed(drop_msg)
+            if not cards:
+                self.root.after(0, lambda: self.log("⚠ Couldn't parse cards from drop."))
+                return
+
+            self.root.after(0, lambda: self.log(f"📋 Cards: {', '.join([c['name'] for c in cards])}"))
+
+            # Look up wishlist counts for each card
+            for card in cards:
+                wishes = await self._lookup_wishes(channel, card["name"])
+                card["wishes"] = wishes
+                await asyncio.sleep(1.5)  # small delay between lookups
+
+            # Score and pick best card
+            best_idx = self._pick_best_card(cards)
+            best = cards[best_idx]
+            emoji = ["1️⃣", "2️⃣", "3️⃣"][best_idx]
+
+            self.root.after(0, lambda: self.log(
+                f"⭐ Grabbing card {best_idx+1}: {best['name']} "
+                f"(print: {best['print']}, wishes: {best['wishes']})"))
+
+            await drop_msg.add_reaction(emoji)
+
         except Exception as e:
-            self.root.after(0, lambda err=e: self.log(f"❌ Drop failed: {err}"))
+            import traceback
+            err = traceback.format_exc()
+            self.root.after(0, lambda: self.log(f"❌ Drop failed: {err}"))
+
+    async def _wait_for_drop(self, channel, timeout=15):
+        """Wait for Karuta's drop embed message containing the 3 cards."""
+        KARUTA_ID = 646937666251915264
+        def check(m):
+            return (m.channel.id == channel.id and
+                    m.author.id == KARUTA_ID and
+                    m.embeds and
+                    "dropping" in m.content.lower())
+        try:
+            msg = await self.client.wait_for("message", check=check, timeout=timeout)
+            return msg
+        except asyncio.TimeoutError:
+            return None
+
+    def _parse_drop_embed(self, message):
+        """Parse card names and print numbers from Karuta drop embed."""
+        cards = []
+        try:
+            for embed in message.embeds:
+                if not embed.image:
+                    continue
+                # Cards come through as fields or description
+                # Karuta drops show cards in embed fields
+                for i, field in enumerate(embed.fields[:3]):
+                    name = field.name.strip() if field.name else f"Card {i+1}"
+                    value = field.value or ""
+                    # Extract print number - appears as a number like "79701 · 1"
+                    import re
+                    print_match = re.search(r'(\d+)\s*[·•]\s*1', value)
+                    print_num = int(print_match.group(1)) if print_match else 99999
+                    cards.append({"name": name, "print": print_num, "wishes": 0, "index": i})
+
+            # Fallback: try parsing from embed description
+            if not cards and message.embeds:
+                embed = message.embeds[0]
+                desc = embed.description or ""
+                import re
+                # Look for card names in bold
+                names = re.findall(r'\*\*(.+?)\*\*', desc)
+                prints = re.findall(r'(\d+)\s*[·•]\s*1', desc)
+                for i, name in enumerate(names[:3]):
+                    print_num = int(prints[i]) if i < len(prints) else 99999
+                    cards.append({"name": name, "print": print_num, "wishes": 0, "index": i})
+        except Exception as e:
+            self.root.after(0, lambda err=e: self.log(f"⚠ Parse error: {err}"))
+        return cards
+
+    async def _lookup_wishes(self, channel, card_name):
+        """Send k!lu and parse the wishlist count from response."""
+        KARUTA_ID = 646937666251915264
+        await channel.send(f"k!lu {card_name}")
+
+        def check(m):
+            return (m.channel.id == channel.id and
+                    m.author.id == KARUTA_ID and
+                    m.embeds)
+        try:
+            msg = await self.client.wait_for("message", check=check, timeout=8)
+            # Parse wish count from embed
+            import re
+            for embed in msg.embeds:
+                text = str(embed.description or "") + str(embed.fields)
+                match = re.search(r'(\d+)\s*wish', text, re.IGNORECASE)
+                if match:
+                    return int(match.group(1))
+            return 0
+        except asyncio.TimeoutError:
+            return 0
+
+    def _pick_best_card(self, cards):
+        """Score each card and return index of best one."""
+        LOW_PRINT_THRESHOLD = 100
+
+        # Always grab if any card has print under threshold
+        for i, card in enumerate(cards):
+            if card["print"] < LOW_PRINT_THRESHOLD:
+                self.root.after(0, lambda n=card["name"], p=card["print"]: self.log(
+                    f"🔥 Auto-grabbing {n} — ultra low print #{p}!"))
+                return i
+
+        # Score: lower print = better, higher wishes = better
+        # Normalize both to 0-1 scale then average
+        prints = [c["print"] for c in cards]
+        wishes = [c["wishes"] for c in cards]
+
+        max_print = max(prints) or 1
+        max_wishes = max(wishes) or 1
+
+        best_score = -1
+        best_idx = 0
+
+        for i, card in enumerate(cards):
+            # Lower print = higher score (invert)
+            print_score = 1 - (card["print"] / max_print)
+            # Higher wishes = higher score
+            wish_score = card["wishes"] / max_wishes
+            # Equal weight
+            total = (print_score + wish_score) / 2
+
+            if total > best_score:
+                best_score = total
+                best_idx = i
+
+        return best_idx
 
 
 # ─────────────────────────────────────────────
