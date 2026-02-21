@@ -10,7 +10,7 @@ from datetime import datetime
 #  CONFIG — change these to match your server
 # ─────────────────────────────────────────────
 SERVER_URL = "https://karutabot-production.up.railway.app"
-ADMIN_PASSWORD = "changeme"
+ADMIN_PASSWORD = "jKlm8675p"
 
 # ─────────────────────────────────────────────
 #  Color Palette (Discord-inspired dark theme)
