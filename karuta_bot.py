@@ -165,8 +165,15 @@ class KarutaApp:
         sf = tk.Frame(self.root, bg=C["card"])
         sf.pack(fill="x", padx=20, pady=6)
 
-        tk.Label(sf, text="Discord Token", font=("Helvetica", 9, "bold"),
-                 bg=C["card"], fg=C["muted"]).grid(row=0, column=0, sticky="w", padx=12, pady=(10,2))
+        token_row = tk.Frame(sf, bg=C["card"])
+        token_row.grid(row=0, column=0, sticky="w", padx=12, pady=(10,2))
+        tk.Label(token_row, text="Discord Token", font=("Helvetica", 9, "bold"),
+                 bg=C["card"], fg=C["muted"]).pack(side="left")
+        tk.Button(token_row, text="❓ How to get my token", font=("Helvetica", 8),
+                  bg=C["accent"], fg=C["white"], activebackground=C["accent2"],
+                  activeforeground=C["white"], relief="flat",
+                  padx=8, pady=1, cursor="hand2",
+                  command=self.show_token_help).pack(side="left", padx=(10,0))
         self.token_var = tk.StringVar(value=self.config.get("token", ""))
         tk.Entry(sf, textvariable=self.token_var, show="•",
                  bg=C["dark"], fg=C["text"], insertbackground=C["text"],
@@ -272,6 +279,53 @@ class KarutaApp:
         self._update_timer()
 
     # ── Helpers ───────────────────────────────
+    def show_token_help(self):
+        import webbrowser
+        win = tk.Toplevel(self.root)
+        win.title("How to get your Discord Token")
+        win.geometry("440x400")
+        win.resizable(False, False)
+        win.configure(bg=C["bg"])
+        win.grab_set()  # modal
+
+        tk.Label(win, text="🔑 Getting Your Discord Token",
+                 font=("Helvetica", 13, "bold"), bg=C["bg"], fg=C["text"]).pack(pady=(20,4))
+        tk.Label(win, text="Follow these steps carefully:",
+                 font=("Helvetica", 9), bg=C["bg"], fg=C["muted"]).pack(pady=(0,12))
+
+        steps = [
+            ("Step 1", "Click the button below to open Discord in your browser"),
+            ("Step 2", "Log into your Discord account if needed"),
+            ("Step 3", "Press F12 on your keyboard to open DevTools"),
+            ("Step 4", "Click the 'Network' tab at the top of DevTools"),
+            ("Step 5", "Press Ctrl+R to reload the page"),
+            ("Step 6", "In the filter box, type:  api"),
+            ("Step 7", "Click any request in the list that appears"),
+            ("Step 8", "Click 'Headers' tab → scroll down to find 'authorization'"),
+            ("Step 9", "Copy that value and paste it into the Token box"),
+        ]
+
+        steps_frame = tk.Frame(win, bg=C["card"])
+        steps_frame.pack(fill="x", padx=20, pady=(0,12))
+
+        for i, (label, desc) in enumerate(steps):
+            row = tk.Frame(steps_frame, bg=C["card"])
+            row.pack(fill="x", padx=12, pady=3)
+            tk.Label(row, text=label, font=("Helvetica", 8, "bold"),
+                     bg=C["card"], fg=C["accent"], width=7, anchor="w").pack(side="left")
+            tk.Label(row, text=desc, font=("Helvetica", 9),
+                     bg=C["card"], fg=C["text"], anchor="w").pack(side="left")
+
+        tk.Button(win, text="🌐  Open Discord in Browser",
+                  font=("Helvetica", 11, "bold"),
+                  bg=C["accent"], fg=C["white"], activebackground=C["accent2"],
+                  activeforeground=C["white"], relief="flat",
+                  padx=20, pady=8, cursor="hand2",
+                  command=lambda: webbrowser.open("https://discord.com/app")).pack(pady=(4,4))
+
+        tk.Label(win, text="⚠  Never share your token with anyone.",
+                 font=("Helvetica", 9, "bold"), bg=C["bg"], fg=C["red"]).pack(pady=(4,12))
+
     def log(self, message):
         timestamp = datetime.now().strftime("%H:%M:%S")
         self.log_box.config(state="normal")
