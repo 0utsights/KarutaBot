@@ -35,12 +35,12 @@ def _setup_tesseract():
 
 # ── Card region percentages (relative to each card column) ───────────────────
 # Adjust these if OCR is reading wrong areas
-NAME_TOP     = 0.04  # name banner starts slightly below top border
-NAME_BOTTOM  = 0.14  # name banner ends at ~14% down
-SERIES_TOP   = 0.78  # series name starts at ~78% down
-SERIES_BOTTOM= 0.88  # series name ends at ~88% down
-PRINT_TOP    = 0.88  # print number starts at ~88% down
-PRINT_BOTTOM = 1.00  # print number goes to bottom
+NAME_TOP     = 0.12  # name banner starts slightly below top border
+NAME_BOTTOM  = 0.26  # name banner ends at ~14% down
+SERIES_TOP   = 0.76  # series name starts where art ends
+SERIES_BOTTOM= 0.89  # series name ends just above print
+PRINT_TOP    = 0.87  # print number starts at ~88% down
+PRINT_BOTTOM = 0.94  # print number goes to bottom
 
 # ── Debug mode: save crops to disk so you can inspect them ───────────────────
 DEBUG_CROPS = True
@@ -170,6 +170,56 @@ def _clean_print(raw):
     if match:
         return int(match.group(1))
     return 99999  # unknown — treated as worst card
+
+
+# ── Visual region debugger ────────────────────────────────────────────────────
+def save_annotated_debug(image_url):
+    """
+    Downloads drop image and saves a copy with coloured rectangles showing
+    exactly which pixel regions are being cropped for name/series/print.
+    Saves to ocr_debug/annotated.png — open this to tune the percentages.
+    """
+    from PIL import ImageDraw, ImageFont
+    try:
+        response = requests.get(image_url, timeout=10)
+        img = Image.open(BytesIO(response.content)).convert("RGB")
+    except Exception as e:
+        print(f"Could not download: {e}")
+        return
+
+    width, height = img.size
+    card_width = width // 3
+    draw = ImageDraw.Draw(img, "RGBA")
+
+    colours = {
+        "name":   (255, 80,  80,  120),   # red
+        "series": (80,  200, 80,  120),   # green
+        "print":  (80,  80,  255, 120),   # blue
+    }
+
+    regions = {
+        "name":   (NAME_TOP,    NAME_BOTTOM),
+        "series": (SERIES_TOP,  SERIES_BOTTOM),
+        "print":  (PRINT_TOP,   PRINT_BOTTOM),
+    }
+
+    for card_i in range(3):
+        x0 = card_i * card_width
+        x1 = x0 + card_width
+        for label, (top_pct, bot_pct) in regions.items():
+            y0 = int(height * top_pct)
+            y1 = int(height * bot_pct)
+            draw.rectangle([x0, y0, x1, y1], fill=colours[label])
+            draw.text((x0 + 4, y0 + 2), label, fill=(255, 255, 255, 255))
+
+    os.makedirs(DEBUG_DIR, exist_ok=True)
+    out_path = os.path.join(DEBUG_DIR, "annotated.png")
+    img.save(out_path)
+    print(f"Saved annotated debug image to: {out_path}")
+    print(f"Image size: {width}x{height}  Card width: {card_width}")
+    print(f"Name   region: y={int(height*NAME_TOP)} to y={int(height*NAME_BOTTOM)}  ({NAME_TOP*100:.0f}%-{NAME_BOTTOM*100:.0f}%)")
+    print(f"Series region: y={int(height*SERIES_TOP)} to y={int(height*SERIES_BOTTOM)}  ({SERIES_TOP*100:.0f}%-{SERIES_BOTTOM*100:.0f}%)")
+    print(f"Print  region: y={int(height*PRINT_TOP)} to y={int(height*PRINT_BOTTOM)}  ({PRINT_TOP*100:.0f}%-{PRINT_BOTTOM*100:.0f}%)")
 
 
 # ── Tesseract installation check ──────────────────────────────────────────────
