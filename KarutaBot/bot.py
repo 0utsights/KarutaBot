@@ -89,8 +89,18 @@ async def do_drop(app, client):
             app.ui_log("⚠ Couldn't find drop message, skipping grab.")
             return
 
-        # Parse cards from image via OCR (placeholder until OCR is added)
-        cards = parse_drop_embed(app, drop_msg)
+        # Try OCR first, fall back to embed parsing if it fails
+        cards = None
+        if drop_msg.attachments:
+            from ocr import parse_drop_image, check_tesseract
+            ok, msg = check_tesseract()
+            if ok:
+                cards = parse_drop_image(drop_msg.attachments[0].url, log_fn=app.ui_log)
+            else:
+                app.ui_log(f"⚠ Tesseract not available: {msg}")
+
+        if not cards:
+            cards = parse_drop_embed(app, drop_msg)
         if not cards:
             app.ui_log("⚠ Couldn't parse cards from drop.")
             return
