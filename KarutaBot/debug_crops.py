@@ -24,7 +24,7 @@ from PIL import Image, ImageDraw
 # ── TUNE THESE ────────────────────────────────────────────────────────────────
 NAME_TOP      = 0.12   # top of name banner
 NAME_BOTTOM   = 0.26   # bottom of name banner
-SERIES_TOP    = 0.74   # top of series name
+SERIES_TOP    = 0.76   # top of series name
 SERIES_BOTTOM = 0.89   # bottom of series name
 PRINT_TOP     = 0.87   # top of print number
 PRINT_BOTTOM  = 0.94   # bottom of print number
@@ -109,8 +109,15 @@ def crop_and_ocr(img):
             raw_path = os.path.join(OUT_DIR, f"card{card_i+1}_{label}.png")
             crop.save(raw_path)
 
-            # Save upscaled greyscale (what tesseract actually sees)
-            proc = crop.resize((crop.width * 3, crop.height * 3), Image.LANCZOS).convert("L")
+            # Preprocess: trim sides, upscale, binarize (what tesseract actually sees)
+            from PIL import ImageEnhance
+            w, h = crop.size
+            trim = int(w * 0.12)
+            proc = crop.crop((trim, 0, w - trim, h))
+            proc = proc.resize((proc.width * 3, proc.height * 3), Image.LANCZOS)
+            proc = proc.convert("L")
+            proc = ImageEnhance.Contrast(proc).enhance(2.5)
+            proc = proc.point(lambda x: 255 if x > 160 else 0, "1").convert("L")
             proc_path = os.path.join(OUT_DIR, f"card{card_i+1}_{label}_processed.png")
             proc.save(proc_path)
 
