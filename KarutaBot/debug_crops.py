@@ -24,8 +24,8 @@ from PIL import Image, ImageDraw
 # ── TUNE THESE ────────────────────────────────────────────────────────────────
 NAME_TOP      = 0.12   # top of name banner
 NAME_BOTTOM   = 0.26   # bottom of name banner
-SERIES_TOP    = 0.76   # top of series name
-SERIES_BOTTOM = 0.86   # bottom of series name
+SERIES_TOP    = 0.74   # top of series name
+SERIES_BOTTOM = 0.89   # bottom of series name
 PRINT_TOP     = 0.87   # top of print number
 PRINT_BOTTOM  = 0.94   # bottom of print number
 # ─────────────────────────────────────────────────────────────────────────────
