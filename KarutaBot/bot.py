@@ -111,8 +111,11 @@ async def do_drop(app, client):
         for card in cards:
             if card["print"] < 100:
                 continue  # skip lookup, will instant grab
-            app.ui_log(f"🔎 Looking up: {card['name']}")
-            wishes = await lookup_wishes(app, client, channel, card["name"])
+            query = card["name"]
+            if card.get("series"):
+                query += f" {card['series']}"
+            app.ui_log(f"🔎 Looking up: {query}")
+            wishes = await lookup_wishes(app, client, channel, query)
             card["wishes"] = wishes
             await asyncio.sleep(1.5)
 
