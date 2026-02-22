@@ -231,12 +231,24 @@ def _preprocess_print(img):
 
     arr = np.array(img)
     threshold = _otsu_threshold(arr)
-    binarized = (arr > threshold)
-    if np.mean(binarized) > 0.6:
-        binarized = ~binarized
 
-    result = np.where(binarized, 255, 0).astype(np.uint8)
-    return Image.fromarray(result)
+    # Try both normal and inverted — pick whichever Tesseract reads digits from
+    try:
+        import pytesseract
+        normal   = Image.fromarray(np.where(arr > threshold, 255, 0).astype(np.uint8))
+        inverted = Image.fromarray(np.where(arr <= threshold, 255, 0).astype(np.uint8))
+        cfg = "--psm 7 -c tessedit_char_whitelist=0123456789·•.O "
+        raw_n = pytesseract.image_to_string(normal,   config=cfg).strip()
+        raw_i = pytesseract.image_to_string(inverted, config=cfg).strip()
+        digits_n = len([c for c in raw_n if c.isdigit()])
+        digits_i = len([c for c in raw_i if c.isdigit()])
+        return inverted if digits_i > digits_n else normal
+    except:
+        # Fallback: use pixel ratio method
+        binarized = arr > threshold
+        if np.mean(binarized) > 0.6:
+            binarized = ~binarized
+        return Image.fromarray(np.where(binarized, 255, 0).astype(np.uint8))
 
 
 # ── Text cleanup ──────────────────────────────────────────────────────────────
