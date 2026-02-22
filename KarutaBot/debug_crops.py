@@ -63,9 +63,9 @@ def crop_and_ocr(img):
 
     try:
         pytesseract = _setup_tesseract()
-        name_cfg   = r"--psm 7 -c tessedit_char_whitelist=ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789 '!?:-."
-        series_cfg = r"--psm 6 -c tessedit_char_whitelist=ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789 '!?:-."
-        print_cfg  = r"--psm 7 -c tessedit_char_whitelist=0123456789."
+        name_cfg   = "--psm 7 -c tessedit_char_whitelist=ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789 !?:-."
+        series_cfg = "--psm 6 -c tessedit_char_whitelist=ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789 !?:-."
+        print_cfg  = "--psm 7 -c tessedit_char_whitelist=0123456789."
         ocr_ok = True
     except Exception as e:
         print(f"\nTesseract not available: {e}")
