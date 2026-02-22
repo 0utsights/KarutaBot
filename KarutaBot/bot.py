@@ -95,7 +95,23 @@ async def do_drop(app, client):
             from ocr import parse_drop_image, check_tesseract
             ok, msg = check_tesseract()
             if ok:
-                cards = parse_drop_image(drop_msg.attachments[0].url, log_fn=app.ui_log)
+                # Open live OCR viewer window
+                viewer = None
+                try:
+                    from ocr_viewer import OCRViewer
+                    viewer = OCRViewer(app.root)
+                    viewer.set_status("Downloading drop image...")
+                except Exception as e:
+                    app.ui_log(f"⚠ Viewer failed to open: {e}")
+
+                cards = parse_drop_image(
+                    drop_msg.attachments[0].url,
+                    log_fn=app.ui_log,
+                    viewer=viewer
+                )
+
+                if viewer and cards:
+                    viewer.show_result(cards)
             else:
                 app.ui_log(f"⚠ Tesseract not available: {msg}")
 
