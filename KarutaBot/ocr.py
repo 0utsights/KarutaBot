@@ -35,9 +35,11 @@ def _setup_tesseract():
 
 # ── Card region percentages (relative to each card column) ───────────────────
 # Adjust these if OCR is reading wrong areas
-NAME_TOP    = 0.00   # name banner starts at top
-NAME_BOTTOM = 0.13   # name banner ends at ~13% down
-PRINT_TOP   = 0.88   # print number starts at ~88% down
+NAME_TOP     = 0.04  # name banner starts slightly below top border
+NAME_BOTTOM  = 0.14  # name banner ends at ~14% down
+SERIES_TOP   = 0.78  # series name starts at ~78% down
+SERIES_BOTTOM= 0.88  # series name ends at ~88% down
+PRINT_TOP    = 0.88  # print number starts at ~88% down
 PRINT_BOTTOM = 1.00  # print number goes to bottom
 
 # ── Debug mode: save crops to disk so you can inspect them ───────────────────
@@ -92,44 +94,37 @@ def parse_drop_image(image_url, log_fn=None):
         if DEBUG_CROPS:
             card_img.save(os.path.join(DEBUG_DIR, f"card_{i+1}_full.png"))
 
-        # ── Crop name region ──────────────────────────────────────────────────
-        name_crop = card_img.crop((
-            0,
-            int(height * NAME_TOP),
-            card_width,
-            int(height * NAME_BOTTOM)
-        ))
-
-        # ── Crop print number region ──────────────────────────────────────────
-        print_crop = card_img.crop((
-            0,
-            int(height * PRINT_TOP),
-            card_width,
-            int(height * PRINT_BOTTOM)
-        ))
+        # ── Crop regions ──────────────────────────────────────────────────────
+        name_crop   = card_img.crop((0, int(height * NAME_TOP),    card_width, int(height * NAME_BOTTOM)))
+        series_crop = card_img.crop((0, int(height * SERIES_TOP),  card_width, int(height * SERIES_BOTTOM)))
+        print_crop  = card_img.crop((0, int(height * PRINT_TOP),   card_width, int(height * PRINT_BOTTOM)))
 
         if DEBUG_CROPS:
-            name_crop.save(os.path.join(DEBUG_DIR, f"card_{i+1}_name.png"))
-            print_crop.save(os.path.join(DEBUG_DIR, f"card_{i+1}_print.png"))
+            name_crop.save(os.path.join(DEBUG_DIR,   f"card_{i+1}_name.png"))
+            series_crop.save(os.path.join(DEBUG_DIR, f"card_{i+1}_series.png"))
+            print_crop.save(os.path.join(DEBUG_DIR,  f"card_{i+1}_print.png"))
 
         # ── Preprocess: upscale + greyscale for better OCR accuracy ──────────
-        name_crop  = _preprocess(name_crop)
-        print_crop = _preprocess(print_crop)
+        name_crop   = _preprocess(name_crop)
+        series_crop = _preprocess(series_crop)
+        print_crop  = _preprocess(print_crop)
 
         # ── Run OCR ───────────────────────────────────────────────────────────
-        ocr_config = "--psm 7 -c tessedit_char_whitelist=ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789 -!:'.,- "
-        raw_name  = pytesseract.image_to_string(name_crop,  config="--psm 7").strip()
-        raw_print = pytesseract.image_to_string(print_crop, config="--psm 7 -c tessedit_char_whitelist=0123456789·•.O ").strip()
+        raw_name   = pytesseract.image_to_string(name_crop,   config="--psm 7").strip()
+        raw_series = pytesseract.image_to_string(series_crop, config="--psm 6").strip()
+        raw_print  = pytesseract.image_to_string(print_crop,  config="--psm 7 -c tessedit_char_whitelist=0123456789·•.O ").strip()
 
-        log(f"🔍 Card {i+1} raw OCR — name: {raw_name!r}  print: {raw_print!r}")
+        log(f"🔍 Card {i+1} raw OCR — name: {raw_name!r}  series: {raw_series!r}  print: {raw_print!r}")
 
         name      = _clean_name(raw_name)
+        series    = _clean_name(raw_series)
         print_num = _clean_print(raw_print)
 
-        log(f"   → name: {name!r}  print: #{print_num}")
+        log(f"   → name: {name!r}  series: {series!r}  print: #{print_num}")
 
         cards.append({
             "name":   name if name else f"Card {i+1}",
+            "series": series,
             "print":  print_num,
             "wishes": 0,
             "index":  i,
@@ -163,12 +158,15 @@ def _clean_print(raw):
     Extract print number from OCR output.
     Format in image: '80299 · 1'  or  '80299·1'
     OCR might return: '8O299 . 1' or '80299 1' etc.
-    We want just the first number (the print number, not the edition).
+    We want just the FIRST number (print), not the edition after the dot.
     """
     # Fix common OCR substitutions
     fixed = raw.replace('O', '0').replace('o', '0').replace('l', '1').replace('I', '1')
-    # Find first sequence of digits
-    match = re.search(r'(\d{3,})', fixed)
+    # Split on common separators (·, •, *, ., space-dot-space) and take only first part
+    parts = re.split(r'[·•\*\|]\s*\d', fixed)
+    first_part = parts[0]
+    # Find digit sequence in first part only
+    match = re.search(r'(\d{3,})', first_part)
     if match:
         return int(match.group(1))
     return 99999  # unknown — treated as worst card
