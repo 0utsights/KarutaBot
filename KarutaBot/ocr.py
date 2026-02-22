@@ -32,27 +32,30 @@ DEBUG_DIR   = "ocr_debug"
 # ── Text cleanup ───────────────────────────────────────────────────────────────
 def _clean_name(raw):
     """Strip junk and restore missing spaces from OCR output."""
-    # Replace non-printable chars and newlines with space
     name = re.sub(r'[^\x20-\x7E]', ' ', raw)
-    # Strip everything before the first capital letter
     name = re.sub(r'^[^A-Z]+', '', name)
-    # Strip trailing non-alphanumeric junk
     name = re.sub(r'[^A-Za-z0-9!?:.]+$', '', name)
-    # Collapse whitespace
     name = re.sub(r'\s+', ' ', name).strip()
-    # Restore spaces Tesseract dropped:
-    # lowercase->uppercase: ShihoMatsuura -> Shiho Matsuura
-    name = re.sub(r'([a-z])([A-Z])', r'\1 \2', name)
-    # UPPER->Upper after another upper: ARMSProject -> ARMS Project
-    name = re.sub(r'([A-Z])([A-Z][a-z])', r'\1 \2', name)
-    # letter->digit: Thracia776 -> Thracia 776
-    name = re.sub(r'([A-Za-z])(\d)', r'\1 \2', name)
-    return name
+    # Strip leading all-caps noise prefix before a real capitalised word
+    # e.g. "CULifis" -> "Lifis", "AKeiKuruma" -> "KeiKuruma"
+    name = re.sub(r'^[A-Z]{1,3}(?=[A-Z][a-z])', '', name)
+    # Restore spaces Tesseract dropped
+    name = re.sub(r'([a-z])([A-Z])', r'\1 \2', name)       # camelCase
+    name = re.sub(r'([A-Z])([A-Z][a-z])', r'\1 \2', name)  # ABCWord -> ABC Word
+    name = re.sub(r'([A-Za-z])(\d)', r'\1 \2', name)        # Word123 -> Word 123
+    return name.strip()
 
 
 def _clean_print(raw):
-    """Return the first digit group with 3+ digits (the print number)."""
+    """Return print number, splitting off edition digit when dot separator is present."""
     fixed = raw.strip().replace('O', '0').replace('o', '0').replace('l', '1')
+    # If dot present as separator, take only digits before it
+    if '.' in fixed:
+        before = fixed.split('.')[0]
+        m = re.search(r'\d{3,}', before)
+        if m:
+            return int(m.group())
+    # Otherwise take first group of 3+ digits
     for group in re.findall(r'\d+', fixed):
         if len(group) >= 3:
             return int(group)
