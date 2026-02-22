@@ -47,11 +47,12 @@ DEBUG_CROPS = True
 DEBUG_DIR   = "ocr_debug"
 
 
-def parse_drop_image(image_url, log_fn=None):
+def parse_drop_image(image_url, log_fn=None, viewer=None):
     """
     Download a Karuta drop image and return list of 3 card dicts:
         [{"name": str, "print": int, "wishes": 0, "index": int}, ...]
     Returns None if anything fails.
+    viewer: optional OCRViewer instance for live visualization.
     """
     def log(msg):
         if log_fn:
@@ -80,6 +81,17 @@ def parse_drop_image(image_url, log_fn=None):
         os.makedirs(DEBUG_DIR, exist_ok=True)
         img.save(os.path.join(DEBUG_DIR, "full_drop.png"))
 
+    # Show annotated image in viewer
+    if viewer:
+        try:
+            from ocr_viewer import annotate_image
+            annotated = annotate_image(img,
+                NAME_TOP, NAME_BOTTOM, SERIES_TOP, SERIES_BOTTOM, PRINT_TOP, PRINT_BOTTOM)
+            viewer.show_full_image(annotated)
+            viewer.set_status("Scanning cards...")
+        except Exception as e:
+            log(f"⚠ Viewer error: {e}")
+
     width, height = img.size
     card_width = width // 3
 
@@ -107,11 +119,16 @@ def parse_drop_image(image_url, log_fn=None):
         # ── Preprocess: upscale + greyscale for better OCR accuracy ──────────
         name_crop   = _preprocess(name_crop)
         series_crop = _preprocess(series_crop)
-        print_crop  = _preprocess(print_crop)
+        print_crop  = _preprocess_print(print_crop)
 
         # ── Run OCR ───────────────────────────────────────────────────────────
+        if viewer: viewer.highlight_processing(i, "name")
         raw_name   = pytesseract.image_to_string(name_crop,   config="--psm 7").strip()
+
+        if viewer: viewer.highlight_processing(i, "series")
         raw_series = pytesseract.image_to_string(series_crop, config="--psm 6").strip()
+
+        if viewer: viewer.highlight_processing(i, "print")
         raw_print  = pytesseract.image_to_string(print_crop,  config="--psm 7 -c tessedit_char_whitelist=0123456789·•.O ").strip()
 
         log(f"🔍 Card {i+1} raw OCR — name: {raw_name!r}  series: {raw_series!r}  print: {raw_print!r}")
@@ -121,6 +138,11 @@ def parse_drop_image(image_url, log_fn=None):
         print_num = _clean_print(raw_print)
 
         log(f"   → name: {name!r}  series: {series!r}  print: #{print_num}")
+
+        if viewer:
+            viewer.update_card(i, "name",   raw_name,   name)
+            viewer.update_card(i, "series", raw_series, series)
+            viewer.update_card(i, "print",  raw_print,  f"#{print_num}")
 
         cards.append({
             "name":   name if name else f"Card {i+1}",
@@ -134,18 +156,40 @@ def parse_drop_image(image_url, log_fn=None):
 
 
 # ── Image preprocessing ───────────────────────────────────────────────────────
-def _preprocess(img, trim_sides=0.12):
+def _otsu_threshold(arr):
+    """Compute Otsu optimal threshold for a numpy array."""
+    import numpy as np
+    hist, _ = np.histogram(arr.flatten(), bins=256, range=(0, 256))
+    total = arr.size
+    sum_total = np.dot(np.arange(256), hist)
+    current_max, threshold, sum_bg, weight_bg = 0, 128, 0, 0
+    for t in range(256):
+        weight_bg += hist[t]
+        if weight_bg == 0 or weight_bg == total:
+            continue
+        weight_fg = total - weight_bg
+        sum_bg += t * hist[t]
+        mean_bg = sum_bg / weight_bg
+        mean_fg = (sum_total - sum_bg) / weight_fg
+        variance = weight_bg * weight_fg * (mean_bg - mean_fg) ** 2
+        if variance > current_max:
+            current_max, threshold = variance, t
+    return threshold
+
+
+def _preprocess(img, trim_sides=0.15):
     """
     Preprocess a crop for OCR:
     1. Trim left/right edges to cut off frame decorations
     2. Upscale 3x
     3. Convert to greyscale
     4. Adaptive binarize using Otsu's method — works for any banner color
+    5. Ensure text is dark on light background (what Tesseract expects)
     """
     import numpy as np
     from PIL import ImageEnhance
 
-    # Trim sides to remove frame border artifacts
+    # Trim sides more aggressively to remove frame border artifacts
     w, h = img.size
     trim = int(w * trim_sides)
     img = img.crop((trim, 0, w - trim, h))
@@ -153,41 +197,44 @@ def _preprocess(img, trim_sides=0.12):
     # Upscale
     img = img.resize((img.width * 3, img.height * 3), Image.LANCZOS)
 
-    # Greyscale
+    # Greyscale + contrast boost
     img = img.convert("L")
-
-    # Boost contrast
     img = ImageEnhance.Contrast(img).enhance(2.0)
 
-    # Otsu's threshold — automatically finds best split between dark/light
+    # Otsu threshold
     arr = np.array(img)
-    # Compute histogram
-    hist, bins = np.histogram(arr.flatten(), bins=256, range=(0, 256))
-    # Otsu's method
-    total = arr.size
-    current_max, threshold = 0, 128
-    sum_total = np.dot(np.arange(256), hist)
-    sum_bg, weight_bg = 0, 0
-    for t in range(256):
-        weight_bg += hist[t]
-        if weight_bg == 0:
-            continue
-        weight_fg = total - weight_bg
-        if weight_fg == 0:
-            break
-        sum_bg += t * hist[t]
-        mean_bg = sum_bg / weight_bg
-        mean_fg = (sum_total - sum_bg) / weight_fg
-        variance = weight_bg * weight_fg * (mean_bg - mean_fg) ** 2
-        if variance > current_max:
-            current_max = variance
-            threshold = t
+    threshold = _otsu_threshold(arr)
+    binarized = (arr > threshold)
 
-    # Apply threshold — invert if background is darker than text
-    binarized = arr > threshold
-    # Check if we need to invert (text should be dark on light background for tesseract)
-    if np.mean(arr[binarized]) < np.mean(arr[~binarized]):
+    # Ensure text is BLACK on WHITE background for Tesseract
+    # The text region should be the minority (fewer pixels than background)
+    # If more than 60% of pixels are "foreground", we have it inverted
+    if np.mean(binarized) > 0.6:
         binarized = ~binarized
+
+    result = np.where(binarized, 255, 0).astype(np.uint8)
+    return Image.fromarray(result)
+
+
+def _preprocess_print(img):
+    """Special preprocessing for print number region — more aggressive side trim."""
+    import numpy as np
+    from PIL import ImageEnhance
+
+    # Print number is in the right ~40% of the region, trim left heavily
+    w, h = img.size
+    img = img.crop((int(w * 0.35), 0, w - int(w * 0.05), h))
+
+    img = img.resize((img.width * 3, img.height * 3), Image.LANCZOS)
+    img = img.convert("L")
+    img = ImageEnhance.Contrast(img).enhance(2.5)
+
+    arr = np.array(img)
+    threshold = _otsu_threshold(arr)
+    binarized = (arr > threshold)
+    if np.mean(binarized) > 0.6:
+        binarized = ~binarized
+
     result = np.where(binarized, 255, 0).astype(np.uint8)
     return Image.fromarray(result)
 

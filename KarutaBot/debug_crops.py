@@ -113,11 +113,16 @@ def crop_and_ocr(img):
             import numpy as np
             from PIL import ImageEnhance
             w, h = crop.size
-            trim = int(w * 0.12)
-            proc = crop.crop((trim, 0, w - trim, h))
+            if label == "print":
+                # Print number sits in right portion — trim left heavily
+                proc = crop.crop((int(w * 0.35), 0, w - int(w * 0.05), h))
+            else:
+                trim = int(w * 0.15)
+                proc = crop.crop((trim, 0, w - trim, h))
             proc = proc.resize((proc.width * 3, proc.height * 3), Image.LANCZOS)
             proc = proc.convert("L")
-            proc = ImageEnhance.Contrast(proc).enhance(2.0)
+            contrast = 2.5 if label == "print" else 2.0
+            proc = ImageEnhance.Contrast(proc).enhance(contrast)
             # Otsu adaptive threshold
             arr = np.array(proc)
             hist, _ = np.histogram(arr.flatten(), bins=256, range=(0,256))
@@ -135,7 +140,7 @@ def crop_and_ocr(img):
                 if variance > current_max:
                     current_max, threshold = variance, t
             binarized = arr > threshold
-            if np.mean(arr[binarized]) < np.mean(arr[~binarized]):
+            if np.mean(binarized) > 0.6:
                 binarized = ~binarized
             proc = Image.fromarray(np.where(binarized, 255, 0).astype(np.uint8))
             proc_path = os.path.join(OUT_DIR, f"card{card_i+1}_{label}_processed.png")
