@@ -140,9 +140,11 @@ def _preprocess(img, trim_sides=0.12):
     1. Trim left/right edges to cut off frame decorations
     2. Upscale 3x
     3. Convert to greyscale
-    4. Binarize (threshold to pure black/white) — removes background noise
+    4. Adaptive binarize using Otsu's method — works for any banner color
     """
-    from PIL import ImageFilter, ImageEnhance
+    import numpy as np
+    from PIL import ImageEnhance
+
     # Trim sides to remove frame border artifacts
     w, h = img.size
     trim = int(w * trim_sides)
@@ -154,14 +156,40 @@ def _preprocess(img, trim_sides=0.12):
     # Greyscale
     img = img.convert("L")
 
-    # Boost contrast before thresholding
-    img = ImageEnhance.Contrast(img).enhance(2.5)
+    # Boost contrast
+    img = ImageEnhance.Contrast(img).enhance(2.0)
 
-    # Binarize — pixels above 160 become white, below become black
-    img = img.point(lambda x: 255 if x > 160 else 0, "1")
-    img = img.convert("L")  # convert back to L for tesseract
+    # Otsu's threshold — automatically finds best split between dark/light
+    arr = np.array(img)
+    # Compute histogram
+    hist, bins = np.histogram(arr.flatten(), bins=256, range=(0, 256))
+    # Otsu's method
+    total = arr.size
+    current_max, threshold = 0, 128
+    sum_total = np.dot(np.arange(256), hist)
+    sum_bg, weight_bg = 0, 0
+    for t in range(256):
+        weight_bg += hist[t]
+        if weight_bg == 0:
+            continue
+        weight_fg = total - weight_bg
+        if weight_fg == 0:
+            break
+        sum_bg += t * hist[t]
+        mean_bg = sum_bg / weight_bg
+        mean_fg = (sum_total - sum_bg) / weight_fg
+        variance = weight_bg * weight_fg * (mean_bg - mean_fg) ** 2
+        if variance > current_max:
+            current_max = variance
+            threshold = t
 
-    return img
+    # Apply threshold — invert if background is darker than text
+    binarized = arr > threshold
+    # Check if we need to invert (text should be dark on light background for tesseract)
+    if np.mean(arr[binarized]) < np.mean(arr[~binarized]):
+        binarized = ~binarized
+    result = np.where(binarized, 255, 0).astype(np.uint8)
+    return Image.fromarray(result)
 
 
 # ── Text cleanup ──────────────────────────────────────────────────────────────
@@ -179,18 +207,20 @@ def _clean_print(raw):
     Extract print number from OCR output.
     Format in image: '80299 · 1'  or  '80299·1'
     OCR might return: '8O299 . 1' or '80299 1' etc.
-    We want just the FIRST number (print), not the edition after the dot.
+    We want just the FIRST number (print), not the edition after the dot/separator.
     """
     # Fix common OCR substitutions
     fixed = raw.replace('O', '0').replace('o', '0').replace('l', '1').replace('I', '1')
-    # Split on common separators (·, •, *, ., space-dot-space) and take only first part
-    parts = re.split(r'[·•\*\|]\s*\d', fixed)
-    first_part = parts[0]
-    # Find digit sequence in first part only
-    match = re.search(r'(\d{3,})', first_part)
-    if match:
-        return int(match.group(1))
-    return 99999  # unknown — treated as worst card
+    # Find ALL digit groups
+    all_nums = re.findall(r'\d+', fixed)
+    if not all_nums:
+        return 99999
+    # The print number is always the larger number (edition is 1, 2, 3 etc)
+    # Filter to only numbers with 3+ digits (actual print numbers)
+    big_nums = [int(n) for n in all_nums if len(n) >= 3]
+    if big_nums:
+        return big_nums[0]  # take first big number
+    return 99999
 
 
 # ── Visual region debugger ────────────────────────────────────────────────────

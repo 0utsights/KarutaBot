@@ -109,15 +109,35 @@ def crop_and_ocr(img):
             raw_path = os.path.join(OUT_DIR, f"card{card_i+1}_{label}.png")
             crop.save(raw_path)
 
-            # Preprocess: trim sides, upscale, binarize (what tesseract actually sees)
+            # Preprocess: trim sides, upscale, adaptive binarize
+            import numpy as np
             from PIL import ImageEnhance
             w, h = crop.size
             trim = int(w * 0.12)
             proc = crop.crop((trim, 0, w - trim, h))
             proc = proc.resize((proc.width * 3, proc.height * 3), Image.LANCZOS)
             proc = proc.convert("L")
-            proc = ImageEnhance.Contrast(proc).enhance(2.5)
-            proc = proc.point(lambda x: 255 if x > 160 else 0, "1").convert("L")
+            proc = ImageEnhance.Contrast(proc).enhance(2.0)
+            # Otsu adaptive threshold
+            arr = np.array(proc)
+            hist, _ = np.histogram(arr.flatten(), bins=256, range=(0,256))
+            total = arr.size
+            sum_total = np.dot(np.arange(256), hist)
+            current_max, threshold, sum_bg, weight_bg = 0, 128, 0, 0
+            for t in range(256):
+                weight_bg += hist[t]
+                if weight_bg == 0 or weight_bg == total: continue
+                weight_fg = total - weight_bg
+                sum_bg += t * hist[t]
+                mean_bg = sum_bg / weight_bg
+                mean_fg = (sum_total - sum_bg) / weight_fg
+                variance = weight_bg * weight_fg * (mean_bg - mean_fg) ** 2
+                if variance > current_max:
+                    current_max, threshold = variance, t
+            binarized = arr > threshold
+            if np.mean(arr[binarized]) < np.mean(arr[~binarized]):
+                binarized = ~binarized
+            proc = Image.fromarray(np.where(binarized, 255, 0).astype(np.uint8))
             proc_path = os.path.join(OUT_DIR, f"card{card_i+1}_{label}_processed.png")
             proc.save(proc_path)
 
