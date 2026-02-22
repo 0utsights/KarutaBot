@@ -138,7 +138,7 @@ async def wait_for_drop(client, channel, timeout=15):
     def check(m):
         return (m.channel.id == channel.id and
                 m.author.id == KARUTA_ID and
-                m.embeds and
+                m.attachments and
                 "dropping" in m.content.lower())
     try:
         return await client.wait_for("message", check=check, timeout=timeout)
