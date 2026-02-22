@@ -134,12 +134,33 @@ def parse_drop_image(image_url, log_fn=None):
 
 
 # ── Image preprocessing ───────────────────────────────────────────────────────
-def _preprocess(img):
-    """Upscale and convert to greyscale — significantly improves OCR accuracy."""
-    scale = 3
-    new_size = (img.width * scale, img.height * scale)
-    img = img.resize(new_size, Image.LANCZOS)
-    img = img.convert("L")  # greyscale
+def _preprocess(img, trim_sides=0.12):
+    """
+    Preprocess a crop for OCR:
+    1. Trim left/right edges to cut off frame decorations
+    2. Upscale 3x
+    3. Convert to greyscale
+    4. Binarize (threshold to pure black/white) — removes background noise
+    """
+    from PIL import ImageFilter, ImageEnhance
+    # Trim sides to remove frame border artifacts
+    w, h = img.size
+    trim = int(w * trim_sides)
+    img = img.crop((trim, 0, w - trim, h))
+
+    # Upscale
+    img = img.resize((img.width * 3, img.height * 3), Image.LANCZOS)
+
+    # Greyscale
+    img = img.convert("L")
+
+    # Boost contrast before thresholding
+    img = ImageEnhance.Contrast(img).enhance(2.5)
+
+    # Binarize — pixels above 160 become white, below become black
+    img = img.point(lambda x: 255 if x > 160 else 0, "1")
+    img = img.convert("L")  # convert back to L for tesseract
+
     return img
 
 
