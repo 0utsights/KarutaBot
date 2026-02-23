@@ -472,7 +472,7 @@ def _debug_visit_msg(app, tag, msg):
     """Log every detail of a message so we can identify energy format."""
     app.ui_log(f"   [visit:{tag}] content: {msg.content[:120]!r}")
     for ei, emb in enumerate(msg.embeds):
-        app.ui_log(f"   [visit:{tag}] embed[{ei}] title={emb.title!r} desc={str(emb.description)[:120]!r}")
+        app.ui_log(f"   [visit:{tag}] embed[{ei}] title={emb.title!r} desc={str(emb.description)[:300]!r}")
         for fi, field in enumerate(emb.fields):
             app.ui_log(f"   [visit:{tag}] embed[{ei}].field[{fi}] name={field.name!r} val={field.value!r}")
     for ri, row in enumerate(msg.components):
@@ -484,13 +484,55 @@ def _debug_visit_msg(app, tag, msg):
 
 
 def _find_button(components, *label_substrings):
-    """Return first non-disabled button whose label contains any substring (case-insensitive)."""
+    """Return first button whose label contains any substring (case-insensitive). Includes disabled."""
     for row in components:
         for btn in row.children:
             lbl = (getattr(btn, "label", "") or "").lower()
             for sub in label_substrings:
                 if sub.lower() in lbl:
                     return btn
+    return None
+
+
+def _find_emoji_button(components, *emoji_names):
+    """Return first button whose emoji str-representation contains any of the given strings."""
+    for row in components:
+        for btn in row.children:
+            emoji = getattr(btn, "emoji", None)
+            if emoji is None:
+                continue
+            emoji_str = str(emoji)
+            for name in emoji_names:
+                if name in emoji_str:
+                    return btn
+    return None
+
+
+def _find_check_button(components):
+    """Return the confirm/check button — no label, not a numbered or speech emoji."""
+    NUMBER_EMOJIS = {"1️⃣", "2️⃣", "3️⃣", "4️⃣", "5️⃣", "💬", "🗨"}
+    for row in components:
+        for btn in row.children:
+            lbl   = (getattr(btn, "label", "") or "").strip()
+            emoji = getattr(btn, "emoji", None)
+            if lbl:
+                continue
+            if emoji is None:
+                continue
+            emoji_str = str(emoji)
+            if any(ne in emoji_str for ne in NUMBER_EMOJIS):
+                continue
+            return btn  # whatever's left should be the checkmark
+    return None
+
+
+def _parse_affection_points(msg):
+    """Parse 'Affection Points · N' from embed description. Returns int or None."""
+    for emb in msg.embeds:
+        desc = str(emb.description or "")
+        m = re.search(r'Affection Points\s*[·:]\s*\*{0,2}(\d+)\*{0,2}', desc, re.IGNORECASE)
+        if m:
+            return int(m.group(1))
     return None
 
 
@@ -612,6 +654,102 @@ async def do_visit(app, client, channel):
             break
     else:
         app.ui_log(f"   ⚠ Visit: hit safety cap of {MAX_ROUNDS} rounds")
+
+    # ── Actions loop: Tell Joke while affection points >= 2 ──
+    # After Talk energy runs out we're back on the Talk/Actions screen.
+    # Enter Actions once, then loop :one: (Tell Joke) → ✓ until points < 2.
+    # Exit with :speech_balloon: to return to the main screen.
+    app.ui_log("   🎭 Checking affection points for Actions loop...")
+    _debug_visit_msg(app, "pre_actions", msg)
+
+    points = _parse_affection_points(msg)
+    if points is None:
+        app.ui_log("   ⚠ Couldn't parse affection points — skipping Actions loop")
+    else:
+        app.ui_log(f"   🎭 Affection points: {points}")
+
+    if points is not None and points >= 2:
+        # Enter Actions menu
+        actions_btn = _find_button(msg.components, "actions")
+        if not actions_btn:
+            app.ui_log("   ⚠ Actions button not found — skipping Actions loop")
+        else:
+            try:
+                await actions_btn.click()
+                app.ui_log("   🎭 Clicked Actions")
+            except Exception as e:
+                app.ui_log(f"   ⚠ Actions click failed: {e}")
+                actions_btn = None  # signal to skip loop
+
+            if actions_btn:
+                # Poll for Actions menu
+                msg = await _poll_visit_msg(app, channel, msg.id)
+                if not msg:
+                    app.ui_log("   ⚠ Timed out waiting for Actions menu")
+                else:
+                    _debug_visit_msg(app, "actions_menu_enter", msg)
+
+                    MAX_JOKES = 30
+                    for joke_num in range(1, MAX_JOKES + 1):
+                        if points is None or points < 2:
+                            break
+
+                        app.ui_log(f"   🎭 Tell Joke #{joke_num} (points={points})")
+
+                        # Click :one: — Tell Joke
+                        one_btn = _find_emoji_button(msg.components, "1️⃣", ":one:")
+                        if not one_btn:
+                            app.ui_log("   ⚠ :one: button not found — debug above")
+                            break
+                        try:
+                            await one_btn.click()
+                            app.ui_log("   🎭 Clicked Tell Joke (:one:)")
+                        except Exception as e:
+                            app.ui_log(f"   ⚠ Tell Joke click failed: {e}")
+                            break
+
+                        # Poll for confirmation screen (checkmark button)
+                        msg = await _poll_visit_msg(app, channel, msg.id)
+                        if not msg:
+                            app.ui_log("   ⚠ Timed out waiting for confirm screen")
+                            break
+                        _debug_visit_msg(app, f"joke{joke_num}_confirm", msg)
+
+                        # Click the checkmark/confirm button
+                        check_btn = _find_check_button(msg.components)
+                        if not check_btn:
+                            app.ui_log("   ⚠ Confirm (✓) button not found — debug above")
+                            break
+                        try:
+                            await check_btn.click()
+                            app.ui_log("   🎭 Confirmed (✓)")
+                        except Exception as e:
+                            app.ui_log(f"   ⚠ Confirm click failed: {e}")
+                            break
+
+                        # Wait for result — should return to Actions menu
+                        await asyncio.sleep(1.5)
+                        try:
+                            msg = await channel.fetch_message(msg.id)
+                        except Exception as e:
+                            app.ui_log(f"   ⚠ Post-joke fetch failed: {e}")
+                            break
+                        _debug_visit_msg(app, f"joke{joke_num}_result", msg)
+
+                        points = _parse_affection_points(msg)
+                        app.ui_log(f"   🎭 Points remaining: {points}")
+
+                    # Exit Actions — click :speech_balloon: to go back to main screen
+                    if msg and msg.components:
+                        speech_btn = _find_emoji_button(msg.components, "💬", ":speech_balloon:")
+                        if speech_btn:
+                            try:
+                                await speech_btn.click()
+                                app.ui_log("   🎭 Clicked :speech_balloon: — exiting Actions")
+                            except Exception as e:
+                                app.ui_log(f"   ⚠ Exit click failed: {e}")
+                        else:
+                            app.ui_log("   ⚠ :speech_balloon: not found — may already be on main screen")
 
     app.ui_log("   ✅ Visit done")
 
