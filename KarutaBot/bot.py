@@ -4,7 +4,7 @@ import re
 import random
 import time
 from datetime import datetime, timedelta
-from config import KARUTA_ID, DROP_COOLDOWN_MIN
+from config import KARUTA_ID, DROP_COOLDOWN_MIN, DROP_JITTER_MIN, DROP_JITTER_MAX
 
 LU_COOLDOWN_SECS = 11  # k!lu has a 10s cooldown — we wait 11 to be safe
 
@@ -76,7 +76,7 @@ async def fetch_reminders(app, client, channel):
             str(embed.title or ""),
             str(embed.description or ""),
             " ".join(str(f.value) for f in embed.fields),
-        ]).replace("**", "")
+        ]).replace("**", "").replace("`", "")
 
         for key in REMINDER_KEYS:
             # Match "Daily is ready" or "Daily in 2 hours 30 minutes" etc.
@@ -151,12 +151,24 @@ async def automation_loop(app, client, channel_id):
 
         await do_drop(app, client, channel)
 
-        # Use the same randomised timer as before — reminders only run once per cycle
-        jitter = random.uniform(0, app.jitter_var.get() * 60)
-        delay  = DROP_COOLDOWN_MIN * 60 + jitter
+        # Base cooldown from k!reminders Drop value (seconds), fall back to flat 30 min
+        # Add random jitter between user-configured min and max
+        base_secs = reminders.get("Drop") or (DROP_COOLDOWN_MIN * 60)
+        jitter_min = getattr(app, "jitter_min_var", None)
+        jitter_max = getattr(app, "jitter_max_var", None)
+        j_min = (jitter_min.get() if jitter_min else DROP_JITTER_MIN) * 60
+        j_max = (jitter_max.get() if jitter_max else DROP_JITTER_MAX) * 60
+        if j_max < j_min:
+            j_min, j_max = j_max, j_min  # swap if misconfigured
+        jitter = random.uniform(j_min, j_max)
+        delay  = base_secs + jitter
+
         app.next_drop_time = datetime.now() + timedelta(seconds=delay)
-        mins, secs = int(delay // 60), int(delay % 60)
-        app.ui_log(f"⏱ Next drop in {mins}m {secs}s")
+        rem_mins  = int(base_secs // 60)
+        tot_mins  = int(delay // 60)
+        tot_secs  = int(delay % 60)
+        app.ui_log(f"⏱ Next drop in {tot_mins}m {tot_secs}s "
+                   f"(cooldown {rem_mins}m + {int(jitter//60)}m jitter)")
         await asyncio.sleep(delay)
 
 
@@ -340,50 +352,63 @@ async def do_daily(app, client, channel):
     app.ui_log("📅 Claiming daily...")
     await channel.send("k!daily")
 
-    def check(m):
+    def check_msg(m):
         return m.channel.id == channel.id and m.author.id == KARUTA_ID
 
+    def check_edit(before, after):
+        return after.channel.id == channel.id and after.author.id == KARUTA_ID and after.components
+
     try:
-        msg = await client.wait_for("message", check=check, timeout=10)
+        # Wait for Karuta's initial daily message
+        msg = await client.wait_for("message", check=check_msg, timeout=10)
 
         if "already" in msg.content.lower():
             app.ui_log("   📅 Daily already claimed.")
             return
 
-        # Log all buttons for debug
+        # Log initial buttons
         if msg.components:
             for ri, row in enumerate(msg.components):
                 for bi, btn in enumerate(row.children):
                     label = getattr(btn, "label", None) or getattr(btn, "emoji", "?")
                     app.ui_log(f"   [daily] button[{ri}][{bi}] = {label!r}")
 
-        if msg.components:
-            try:
-                # Step 1: click first button (opens quiz) — label irrelevant
-                first_btn = msg.components[0].children[0]
-                await first_btn.click()
-                app.ui_log("   📅 Clicked quiz button, waiting for follow-up...")
-                await asyncio.sleep(2)
+        if not msg.components:
+            app.ui_log(f"   📅 No buttons. Content: {msg.content[:80]!r}")
+            return
 
-                # Step 2: wait for follow-up message (Yes/No or whatever buttons)
-                followup = await client.wait_for("message", check=check, timeout=12)
+        try:
+            # Step 1: click the Quiz button (first button)
+            quiz_btn = msg.components[0].children[0]
+            await quiz_btn.click()
+            app.ui_log("   📅 Clicked Quiz button, waiting for edit...")
 
-                # Log followup buttons for debug
-                if followup.components:
-                    for ri, row in enumerate(followup.components):
-                        for bi, btn in enumerate(row.children):
-                            label = getattr(btn, "label", None) or getattr(btn, "emoji", "?")
-                            app.ui_log(f"   [daily followup] button[{ri}][{bi}] = {label!r}")
-                    # Click first button regardless of label
-                    answer_btn = followup.components[0].children[0]
-                    await answer_btn.click()
-                    app.ui_log("   ✅ Daily answered!")
-                else:
-                    app.ui_log(f"   ⚠ No buttons on followup. Content: {followup.content[:80]!r}")
-            except Exception as e:
-                app.ui_log(f"   ⚠ Daily button click failed: {e}")
-        else:
-            app.ui_log(f"   📅 No buttons found. Content: {msg.content[:80]!r}")
+            # Step 2: Karuta EDITS the message to show Yes/No buttons — listen for edit
+            # discord.py passes (before, after) as two args to the check function
+            def check_edit(before, after):
+                return (after.id == msg.id and
+                        after.channel.id == channel.id and
+                        bool(after.components))
+
+            before_msg, after_msg = await client.wait_for("message_edit", check=check_edit, timeout=15)
+
+            # Log the edited message buttons
+            if after_msg.components:
+                for ri, row in enumerate(after_msg.components):
+                    for bi, btn in enumerate(row.children):
+                        label = getattr(btn, "label", None) or getattr(btn, "emoji", "?")
+                        app.ui_log(f"   [daily edit] button[{ri}][{bi}] = {label!r}")
+                # Click first button — Yes, No, whatever it is
+                answer_btn = after_msg.components[0].children[0]
+                await answer_btn.click()
+                app.ui_log("   ✅ Daily answered!")
+            else:
+                app.ui_log("   ⚠ Edited message has no buttons")
+
+        except asyncio.TimeoutError:
+            app.ui_log("   ⚠ Timed out waiting for quiz edit")
+        except Exception as e:
+            app.ui_log(f"   ⚠ Daily button click failed: {e}")
 
     except asyncio.TimeoutError:
         app.ui_log("   ⚠ Daily timed out")

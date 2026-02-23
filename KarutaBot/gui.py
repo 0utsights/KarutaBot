@@ -5,7 +5,7 @@ import webbrowser
 from datetime import datetime
 
 from config import (C, APP_NAME, APP_VERSION, MAX_DROPS_PER_DAY,
-                    DROP_JITTER_MAX, load_config, save_config, default_account)
+                    DROP_JITTER_MIN, DROP_JITTER_MAX, load_config, save_config, default_account)
 from license import start_heartbeat, release_key
 from bot import run_discord_loop, do_drop
 
@@ -157,17 +157,25 @@ class AccountPanel:
                    font=("Segoe UI", 10), buttonbackground=C["card"],
                    ).grid(row=1, column=0, sticky="w", pady=(2, 0), ipady=4)
 
-        tk.Label(settings, text="JITTER (mins)", font=("Segoe UI", 7, "bold"),
+        tk.Label(settings, text="JITTER MIN (mins)", font=("Segoe UI", 7, "bold"),
                  bg=C["card2"], fg=C["muted"]).grid(row=0, column=1, sticky="w", padx=(20, 0))
-        self.jitter_var = tk.IntVar(value=self.data.get("jitter", DROP_JITTER_MAX))
-        tk.Spinbox(settings, from_=0, to=30, textvariable=self.jitter_var,
+        self.jitter_min_var = tk.IntVar(value=self.data.get("jitter_min", DROP_JITTER_MIN))
+        tk.Spinbox(settings, from_=0, to=30, textvariable=self.jitter_min_var,
                    width=5, bg=C["dark"], fg=C["text"], relief="flat",
                    font=("Segoe UI", 10), buttonbackground=C["card"],
                    ).grid(row=1, column=1, sticky="w", padx=(20, 0), pady=(2, 0), ipady=4)
 
-        tk.Label(settings, text="drops fire 30 to 30+jitter mins apart",
+        tk.Label(settings, text="JITTER MAX (mins)", font=("Segoe UI", 7, "bold"),
+                 bg=C["card2"], fg=C["muted"]).grid(row=0, column=2, sticky="w", padx=(12, 0))
+        self.jitter_max_var = tk.IntVar(value=self.data.get("jitter_max", DROP_JITTER_MAX))
+        tk.Spinbox(settings, from_=0, to=60, textvariable=self.jitter_max_var,
+                   width=5, bg=C["dark"], fg=C["text"], relief="flat",
+                   font=("Segoe UI", 10), buttonbackground=C["card"],
+                   ).grid(row=1, column=2, sticky="w", padx=(12, 0), pady=(2, 0), ipady=4)
+
+        tk.Label(settings, text="jitter added to k!reminders cooldown",
                  font=("Segoe UI", 8), bg=C["card2"], fg=C["muted"]
-                 ).grid(row=1, column=2, padx=(12, 0), sticky="w")
+                 ).grid(row=1, column=3, padx=(12, 0), sticky="w")
 
         # ── Button row ──
         _divider(self.frame, pady=6)
@@ -296,7 +304,8 @@ class AccountPanel:
             "token":      self.token_var.get().strip(),
             "channel_id": self.channel_var.get().strip(),
             "max_drops":  self.max_drops_var.get(),
-            "jitter":     self.jitter_var.get(),
+            "jitter_min":  self.jitter_min_var.get(),
+            "jitter_max":  self.jitter_max_var.get(),
             "enabled":    True,
         }
 
