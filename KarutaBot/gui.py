@@ -145,6 +145,13 @@ class AccountPanel:
         ce = _entry(creds, self.channel_var, width=18)
         ce.grid(row=1, column=1, sticky="ew", pady=(2, 6), padx=(16, 0), ipady=5)
 
+        # Visit Card Code
+        tk.Label(creds, text="VISIT CARD CODE", font=("Segoe UI", 7, "bold"),
+                 bg=C["card2"], fg=C["muted"]).grid(row=0, column=2, sticky="w", padx=(16, 0))
+        self.visit_card_var = tk.StringVar(value=self.data.get("visit_card_code", ""))
+        ve = _entry(creds, self.visit_card_var, width=14)
+        ve.grid(row=1, column=2, sticky="ew", pady=(2, 6), padx=(16, 0), ipady=5)
+
         # ── Settings row ──
         settings = tk.Frame(self.frame, bg=C["card2"])
         settings.pack(fill="x", padx=14, pady=(0, 4))
@@ -300,13 +307,14 @@ class AccountPanel:
 
     def get_data(self):
         return {
-            "name":       self.name_var.get(),
-            "token":      self.token_var.get().strip(),
-            "channel_id": self.channel_var.get().strip(),
-            "max_drops":  self.max_drops_var.get(),
-            "jitter_min":  self.jitter_min_var.get(),
-            "jitter_max":  self.jitter_max_var.get(),
-            "enabled":    True,
+            "name":            self.name_var.get(),
+            "token":           self.token_var.get().strip(),
+            "channel_id":      self.channel_var.get().strip(),
+            "max_drops":       self.max_drops_var.get(),
+            "jitter_min":      self.jitter_min_var.get(),
+            "jitter_max":      self.jitter_max_var.get(),
+            "visit_card_code": self.visit_card_var.get().strip(),
+            "enabled":         True,
         }
 
     # ── Bot control ──
