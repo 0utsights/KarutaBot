@@ -1,5 +1,8 @@
 """
-ocr.py — Karuta drop image parser
+ocr.py — Karuta drop image parser using EasyOCR
+
+EasyOCR is installed via pip and downloads its model automatically on first run.
+No separate program installation required.
 """
 
 import re
@@ -7,15 +10,6 @@ import os
 import requests
 from io import BytesIO
 from PIL import Image
-
-# ── Tesseract config ───────────────────────────────────────────────────────────
-TESSERACT_PATH = r"C:\Program Files\Tesseract-OCR\tesseract.exe"
-
-def _setup_tesseract():
-    import pytesseract
-    if os.path.exists(TESSERACT_PATH):
-        pytesseract.pytesseract.tesseract_cmd = TESSERACT_PATH
-    return pytesseract
 
 # ── Card region percentages ────────────────────────────────────────────────────
 NAME_TOP      = 0.12
@@ -28,6 +22,36 @@ PRINT_BOTTOM  = 0.94
 DEBUG_CROPS = True
 DEBUG_DIR   = "ocr_debug"
 
+# ── EasyOCR reader (loaded once, reused) ──────────────────────────────────────
+_reader = None
+
+def _get_reader(log_fn=None):
+    """Load EasyOCR reader, downloading model on first use (~100MB, one time)."""
+    global _reader
+    if _reader is not None:
+        return _reader
+    try:
+        import easyocr
+    except ImportError:
+        raise RuntimeError(
+            "EasyOCR not installed. Run: pip install easyocr"
+        )
+    if log_fn:
+        log_fn("Loading OCR model (first run may take a moment)...")
+    _reader = easyocr.Reader(["en"], verbose=False)
+    if log_fn:
+        log_fn("OCR model loaded.")
+    return _reader
+
+
+def check_easyocr():
+    """Returns (available: bool, message: str)"""
+    try:
+        import easyocr
+        return True, "EasyOCR is available."
+    except ImportError:
+        return False, "EasyOCR not installed. Run: pip install easyocr"
+
 
 # ── Text cleanup ───────────────────────────────────────────────────────────────
 def _clean_name(raw):
@@ -37,25 +61,22 @@ def _clean_name(raw):
     name = re.sub(r'[^A-Za-z0-9!?:.]+$', '', name)
     name = re.sub(r'\s+', ' ', name).strip()
     # Strip leading all-caps noise prefix before a real capitalised word
-    # e.g. "CULifis" -> "Lifis", "AKeiKuruma" -> "KeiKuruma"
     name = re.sub(r'^[A-Z]{1,3}(?=[A-Z][a-z])', '', name)
-    # Restore spaces Tesseract dropped
-    name = re.sub(r'([a-z])([A-Z])', r'\1 \2', name)       # camelCase
-    name = re.sub(r'([A-Z])([A-Z][a-z])', r'\1 \2', name)  # ABCWord -> ABC Word
-    name = re.sub(r'([A-Za-z])(\d)', r'\1 \2', name)        # Word123 -> Word 123
+    # Restore spaces Tesseract/EasyOCR dropped
+    name = re.sub(r'([a-z])([A-Z])', r'\1 \2', name)
+    name = re.sub(r'([A-Z])([A-Z][a-z])', r'\1 \2', name)
+    name = re.sub(r'([A-Za-z])(\d)', r'\1 \2', name)
     return name.strip()
 
 
 def _clean_print(raw):
-    """Return print number, splitting off edition digit when dot separator is present."""
+    """Return print number, splitting off edition digit when dot separator present."""
     fixed = raw.strip().replace('O', '0').replace('o', '0').replace('l', '1')
-    # If dot present as separator, take only digits before it
     if '.' in fixed:
         before = fixed.split('.')[0]
         m = re.search(r'\d{3,}', before)
         if m:
             return int(m.group())
-    # Otherwise take first group of 3+ digits
     for group in re.findall(r'\d+', fixed):
         if len(group) >= 3:
             return int(group)
@@ -63,68 +84,39 @@ def _clean_print(raw):
 
 
 # ── Image preprocessing ────────────────────────────────────────────────────────
-def _otsu_threshold(arr):
-    import numpy as np
-    hist, _ = np.histogram(arr.flatten(), bins=256, range=(0, 256))
-    total = arr.size
-    sum_total = np.dot(np.arange(256), hist)
-    current_max, threshold, sum_bg, weight_bg = 0, 128, 0, 0
-    for t in range(256):
-        weight_bg += hist[t]
-        if weight_bg == 0 or weight_bg == total:
-            continue
-        weight_fg = total - weight_bg
-        sum_bg += t * hist[t]
-        mean_bg = sum_bg / weight_bg
-        mean_fg = (sum_total - sum_bg) / weight_fg
-        variance = weight_bg * weight_fg * (mean_bg - mean_fg) ** 2
-        if variance > current_max:
-            current_max, threshold = variance, t
-    return threshold
-
-
 def _preprocess(img, trim_sides=0.18):
-    import numpy as np
+    """Trim frame edges and upscale for better OCR accuracy."""
     from PIL import ImageEnhance
     w, h = img.size
     trim = int(w * trim_sides)
     img = img.crop((trim, 0, w - trim, h))
     img = img.resize((img.width * 3, img.height * 3), Image.LANCZOS)
-    img = img.convert("L")
-    img = ImageEnhance.Contrast(img).enhance(2.0)
-    arr = np.array(img)
-    threshold = _otsu_threshold(arr)
-    binarized = arr > threshold
-    if np.mean(binarized) > 0.6:
-        binarized = ~binarized
-    return Image.fromarray(np.where(binarized, 255, 0).astype(np.uint8))
+    return img
 
 
 def _preprocess_print(img):
-    import numpy as np
-    from PIL import ImageEnhance
+    """Upscale print region — EasyOCR handles the binarization internally."""
     w, h = img.size
-    img = img.crop((int(w * 0.35), 0, w - int(w * 0.05), h))
+    img = img.crop((int(w * 0.25), 0, w - int(w * 0.05), h))
     img = img.resize((img.width * 3, img.height * 3), Image.LANCZOS)
-    img = img.convert("L")
-    img = ImageEnhance.Contrast(img).enhance(2.5)
-    arr = np.array(img)
-    threshold = _otsu_threshold(arr)
-    try:
-        import pytesseract
-        normal   = Image.fromarray(np.where(arr > threshold,  255, 0).astype(np.uint8))
-        inverted = Image.fromarray(np.where(arr <= threshold, 255, 0).astype(np.uint8))
-        cfg = "--psm 7 -c tessedit_char_whitelist=0123456789."
-        raw_n = pytesseract.image_to_string(normal,   config=cfg).strip()
-        raw_i = pytesseract.image_to_string(inverted, config=cfg).strip()
-        digits_n = sum(c.isdigit() for c in raw_n)
-        digits_i = sum(c.isdigit() for c in raw_i)
-        return inverted if digits_i > digits_n else normal
-    except Exception:
-        binarized = arr > threshold
-        if np.mean(binarized) > 0.6:
-            binarized = ~binarized
-        return Image.fromarray(np.where(binarized, 255, 0).astype(np.uint8))
+    return img
+
+
+# ── EasyOCR helpers ────────────────────────────────────────────────────────────
+def _ocr_text(reader, img):
+    """Run EasyOCR on an image, return concatenated text."""
+    import numpy as np
+    arr = np.array(img.convert("RGB"))
+    results = reader.readtext(arr, detail=0, paragraph=True)
+    return " ".join(results).strip()
+
+
+def _ocr_print(reader, img):
+    """Run EasyOCR on print region, allow only digits and dot."""
+    import numpy as np
+    arr = np.array(img.convert("RGB"))
+    results = reader.readtext(arr, detail=0, allowlist="0123456789.")
+    return " ".join(results).strip()
 
 
 # ── Main parser ────────────────────────────────────────────────────────────────
@@ -134,9 +126,9 @@ def parse_drop_image(image_url, log_fn=None, viewer=None):
             log_fn(msg)
 
     try:
-        pytesseract = _setup_tesseract()
+        reader = _get_reader(log_fn=log_fn)
     except Exception as e:
-        log(f"Tesseract setup error: {e}")
+        log(f"OCR setup error: {e}")
         return None
 
     try:
@@ -165,10 +157,6 @@ def parse_drop_image(image_url, log_fn=None, viewer=None):
     card_width = width // 3
     cards = []
 
-    name_cfg   = "--psm 13 -c tessedit_char_whitelist=ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789 !?:-."
-    series_cfg = "--psm 13 -c tessedit_char_whitelist=ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789 !?:-."
-    print_cfg  = "--psm 7 -c tessedit_char_whitelist=0123456789."
-
     for i in range(3):
         x_start  = i * card_width
         card_img = img.crop((x_start, 0, x_start + card_width, height))
@@ -192,13 +180,13 @@ def parse_drop_image(image_url, log_fn=None, viewer=None):
             print_crop.save(os.path.join(DEBUG_DIR,  f"card{i+1}_print_processed.png"))
 
         if viewer: viewer.highlight_processing(i, "name")
-        raw_name   = pytesseract.image_to_string(name_crop,   config=name_cfg).strip()
+        raw_name   = _ocr_text(reader, name_crop)
 
         if viewer: viewer.highlight_processing(i, "series")
-        raw_series = pytesseract.image_to_string(series_crop, config=series_cfg).strip()
+        raw_series = _ocr_text(reader, series_crop)
 
         if viewer: viewer.highlight_processing(i, "print")
-        raw_print  = pytesseract.image_to_string(print_crop,  config=print_cfg).strip()
+        raw_print  = _ocr_print(reader, print_crop)
 
         log(f"Card {i+1} raw — name: {raw_name!r}  series: {raw_series!r}  print: {raw_print!r}")
 
@@ -222,13 +210,3 @@ def parse_drop_image(image_url, log_fn=None, viewer=None):
         })
 
     return cards
-
-
-# ── Tesseract check ────────────────────────────────────────────────────────────
-def check_tesseract():
-    try:
-        pytesseract = _setup_tesseract()
-        pytesseract.get_tesseract_version()
-        return True, "Tesseract is installed and ready."
-    except Exception as e:
-        return False, str(e)
