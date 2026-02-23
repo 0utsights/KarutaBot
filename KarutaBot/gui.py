@@ -78,9 +78,12 @@ class AccountPanel:
         self.next_drop_time = None
         self.drops_today    = 0
         self.last_reset     = datetime.now().date()
+        self._reminder_seconds    = {}   # last known values in seconds
+        self._reminder_updated_at = None # when they were last fetched
 
         self._build(parent)
         self._update_timer()
+        self._tick_reminders()
 
     def _build(self, parent):
         # Outer border frame
@@ -263,27 +266,36 @@ class AccountPanel:
         self.drops_label.config(text=f"{self.drops_today} / {limit}", fg=color)
 
     def update_reminders(self, reminders):
-        """Update the reminder status badges. reminders = {key: seconds_or_None}"""
-        for key, val in reminders.items():
-            if key not in self._reminder_labels:
-                continue
-            lbl = self._reminder_labels[key]
-            if val is None:
-                lbl.config(text="?", fg=C["muted"])
-            elif val == 0:
-                lbl.config(text="READY", fg=C["accent3"])
-            else:
-                # Format as Xh Ym or Xm
-                h = int(val) // 3600
-                m = (int(val) % 3600) // 60
-                s = int(val) % 60
-                if h > 0:
-                    txt = f"{h}h {m}m"
-                elif m > 0:
-                    txt = f"{m}m"
+        """Store new reminder values from a fresh k!reminders fetch and reset the tick clock."""
+        self._reminder_seconds    = dict(reminders)
+        self._reminder_updated_at = datetime.now()
+
+    def _tick_reminders(self):
+        """Run every second — decrement stored reminder values and refresh badge text."""
+        if self._reminder_updated_at is not None and self._reminder_seconds:
+            elapsed = (datetime.now() - self._reminder_updated_at).total_seconds()
+            for key, lbl in self._reminder_labels.items():
+                raw = self._reminder_seconds.get(key)
+                if raw is None:
+                    lbl.config(text="?", fg=C["muted"])
+                elif raw == 0:
+                    lbl.config(text="READY", fg=C["accent3"])
                 else:
-                    txt = f"{s}s"
-                lbl.config(text=txt, fg=C["yellow"])
+                    remaining = max(0, int(raw) - int(elapsed))
+                    if remaining == 0:
+                        lbl.config(text="READY", fg=C["accent3"])
+                    else:
+                        h = remaining // 3600
+                        m = (remaining % 3600) // 60
+                        s = remaining % 60
+                        if h > 0:
+                            txt = f"{h}h {m}m"
+                        elif m > 0:
+                            txt = f"{m}m {s:02d}s"
+                        else:
+                            txt = f"{s}s"
+                        lbl.config(text=txt, fg=C["yellow"])
+        self.app.root.after(1000, self._tick_reminders)
 
     def reset_daily_if_needed(self):
         today = datetime.now().date()
