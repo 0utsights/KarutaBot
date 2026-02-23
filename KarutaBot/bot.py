@@ -1,17 +1,25 @@
 import discord
 import asyncio
 import re
+import random
+import time
+from datetime import datetime, timedelta
 from config import KARUTA_ID, DROP_COOLDOWN_MIN
+
+LU_COOLDOWN_SECS = 11  # k!lu has a 10s cooldown — we wait 11 to be safe
+
+# Commands we track in k!reminders
+REMINDER_KEYS = ["Daily", "Vote", "Drop", "Grab", "Work", "Visit"]
 
 
 # ─────────────────────────────────────────────
 #  Discord runner
 # ─────────────────────────────────────────────
 def run_discord_loop(app, token, channel_id):
-    """Called in a background thread. Runs the async discord loop."""
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
     app.loop = loop
+    app._last_lu_time = 0
 
     client = discord.Client()
     app.client = client
@@ -20,44 +28,126 @@ def run_discord_loop(app, token, channel_id):
     async def on_ready():
         app.ui_log(f"✅ Logged in as {client.user.name}")
         app.ui_set_status(f"Online as {client.user.name}", online=True)
-        loop.create_task(drop_loop(app, client, channel_id))
+        loop.create_task(automation_loop(app, client, channel_id))
 
     async def runner():
         try:
             async with client:
                 await client.start(token)
         except discord.LoginFailure:
-            app.ui_log("❌ Invalid token — please update your Discord token.")
+            app.ui_log("❌ Invalid token.")
             app.ui_set_status("Invalid Token", online=False)
             app.app.root.after(0, app.stop_bot)
         except Exception:
             import traceback
-            err = traceback.format_exc()
-            app.ui_log(f"❌ Error: {err}")
+            app.ui_log(f"❌ Error: {traceback.format_exc()}")
             app.ui_set_status("Error", online=False)
 
     loop.run_until_complete(runner())
 
 
 # ─────────────────────────────────────────────
-#  Drop loop
+#  k!reminders parser
+#  Returns dict: {"Daily": 0, "Vote": 3600, "Drop": 0, ...}
+#  Value is seconds until ready (0 = ready now)
 # ─────────────────────────────────────────────
-async def drop_loop(app, client, channel_id):
-    from datetime import datetime, timedelta
-    import random
+async def fetch_reminders(app, client, channel):
+    await channel.send("k!reminders")
+
+    def check(m):
+        return (m.channel.id == channel.id and
+                m.author.id == KARUTA_ID and
+                m.embeds)
+    try:
+        msg = await client.wait_for("message", check=check, timeout=12)
+    except asyncio.TimeoutError:
+        app.ui_log("⚠ k!reminders timed out")
+        return {}
+
+    result = {}
+    for embed in msg.embeds:
+        text = " ".join([
+            str(embed.title or ""),
+            str(embed.description or ""),
+            " ".join(str(f.value) for f in embed.fields),
+        ]).replace("**", "")
+
+        for key in REMINDER_KEYS:
+            # Match "Daily is ready" or "Daily in 2 hours 30 minutes" etc.
+            pattern = rf'{key}\s+(?:is\s+)?(ready|in\s+([\d\.]+)\s*(hour|minute|second)s?(?:\s+(\d+)\s*(minute|second)s?)?)'
+            m = re.search(pattern, text, re.IGNORECASE)
+            if m:
+                if "ready" in m.group(1).lower():
+                    result[key] = 0
+                else:
+                    result[key] = _parse_duration(m.group(0))
+            else:
+                result[key] = None  # not mentioned
+
+    app.ui_log("📋 Reminders: " + ", ".join(
+        f"{k}={'ready' if v == 0 else f'{int(v)}s' if v else '?'}"
+        for k, v in result.items()
+    ))
+
+    # Update UI reminder labels
+    app.app.root.after(0, lambda: app.update_reminders(result))
+    return result
+
+
+def _parse_duration(text):
+    """Convert 'in `2 hours 30 minutes`' -> seconds. Strips backticks."""
+    # Strip backtick formatting Karuta uses: `2 hours`
+    text = text.replace("`", "")
+    total = 0
+    for num, unit in re.findall(r"([\d\.]+)\s*(hour|minute|second)", text, re.IGNORECASE):
+        n = float(num)
+        u = unit.lower()
+        if u.startswith("h"):
+            total += n * 3600
+        elif u.startswith("m"):
+            total += n * 60
+        elif u.startswith("s"):
+            total += n
+    return int(total) if total else 0
+
+
+# ─────────────────────────────────────────────
+#  Main automation loop — one k!reminders check per drop cycle
+# ─────────────────────────────────────────────
+async def automation_loop(app, client, channel_id):
+    channel = client.get_channel(int(channel_id))
+    if not channel:
+        app.ui_log("❌ Channel not found.")
+        return
 
     while app.running:
         app.reset_daily_if_needed()
 
+        # Check reminders once per cycle to update UI badges and run ready commands
+        reminders = await fetch_reminders(app, client, channel)
+        await asyncio.sleep(2)
+
+        # ── Daily ──
+        if reminders.get("Daily") == 0:
+            await do_daily(app, client, channel)
+            await asyncio.sleep(2)
+
+        # ── Visit ──
+        if reminders.get("Visit") == 0:
+            await do_visit(app, client, channel)
+            await asyncio.sleep(2)
+
+        # ── Drop ──
         if app.drops_today >= app.max_drops_var.get():
-            app.ui_log(f"⚠ Daily limit of {app.max_drops_var.get()} drops reached. Waiting...")
-            await asyncio.sleep(10 * 60)
+            app.ui_log(f"⚠ Daily drop limit reached ({app.max_drops_var.get()}). Waiting...")
+            await asyncio.sleep(600)
             continue
 
-        await do_drop(app, client)
+        await do_drop(app, client, channel)
 
-        jitter  = random.uniform(0, app.jitter_var.get() * 60)
-        delay   = DROP_COOLDOWN_MIN * 60 + jitter
+        # Use the same randomised timer as before — reminders only run once per cycle
+        jitter = random.uniform(0, app.jitter_var.get() * 60)
+        delay  = DROP_COOLDOWN_MIN * 60 + jitter
         app.next_drop_time = datetime.now() + timedelta(seconds=delay)
         mins, secs = int(delay // 60), int(delay % 60)
         app.ui_log(f"⏱ Next drop in {mins}m {secs}s")
@@ -65,85 +155,77 @@ async def drop_loop(app, client, channel_id):
 
 
 # ─────────────────────────────────────────────
-#  Single drop + grab
+#  Drop + grab
 # ─────────────────────────────────────────────
-async def do_drop(app, client):
+async def do_drop(app, client, channel):
     app.reset_daily_if_needed()
     if app.drops_today >= app.max_drops_var.get():
         return
 
     try:
-        channel = client.get_channel(int(app.channel_var.get().strip()))
-        if not channel:
-            app.ui_log("❌ Channel not found. Check your Channel ID.")
-            return
-
         await channel.send("k!drop")
         app.drops_today += 1
         app.ui_log(f"🃏 Dropped! ({app.drops_today}/{app.max_drops_var.get()} today)")
         app.app.root.after(0, app.update_drops_label)
 
-        # Wait for the drop message
         drop_msg = await wait_for_drop(client, channel)
         if not drop_msg:
-            app.ui_log("⚠ Couldn't find drop message, skipping grab.")
+            app.ui_log("⚠ No drop message detected.")
             return
 
-        # Try OCR first, fall back to embed parsing if it fails
+        # OCR parse
         cards = None
         if drop_msg.attachments:
             from ocr import parse_drop_image, check_easyocr
-            ok, msg = check_easyocr()
+            ok, _ = check_easyocr()
             if ok:
-                # Open live OCR viewer window
                 viewer = None
                 try:
                     from ocr_viewer import OCRViewer
                     viewer = OCRViewer(app.app.root)
                     viewer.set_status("Downloading drop image...")
                 except Exception as e:
-                    app.ui_log(f"⚠ Viewer failed to open: {e}")
-
+                    app.ui_log(f"⚠ Viewer error: {e}")
                 cards = parse_drop_image(
                     drop_msg.attachments[0].url,
                     log_fn=app.ui_log,
                     viewer=viewer
                 )
-
                 if viewer and cards:
                     viewer.show_result(cards)
-            else:
-                app.ui_log(f"⚠ Tesseract not available: {msg}")
 
         if not cards:
             cards = parse_drop_embed(app, drop_msg)
         if not cards:
-            app.ui_log("⚠ Couldn't parse cards from drop.")
+            app.ui_log("⚠ Couldn't parse cards.")
             return
 
-        app.ui_log("📋 Cards: " + ", ".join([f"{c['name']} (#{c['print']})" for c in cards]))
+        app.ui_log("📋 Cards: " + ", ".join(
+            f"{c['name']} (#{c['print']})" for c in cards))
 
-        # Look up wishlist count for each card in order
+        # Wishlist lookup per card
         for card in cards:
             if card["print"] < 100:
-                continue  # skip lookup, will instant grab
+                continue
             query = card["name"]
             if card.get("series"):
                 query += f" {card['series']}"
             app.ui_log(f"🔎 Looking up: {query}")
-            wishes = await lookup_wishes(app, client, channel, query)
-            card["wishes"] = wishes
-            await asyncio.sleep(1.5)
+            card["wishes"] = await lookup_wishes(app, client, channel, query)
 
-        # Pick best and grab
+        # Pick + grab
         best_idx = pick_best_card(app, cards)
         best     = cards[best_idx]
         emoji    = ["1️⃣", "2️⃣", "3️⃣"][best_idx]
 
         app.ui_log(
             f"⭐ Grabbing card {best_idx+1}: {best['name']} "
-            f"(print: {best['print']}, wishes: {best['wishes']})")
+            f"(print: #{best['print']}, wishes: {best['wishes']})")
         await drop_msg.add_reaction(emoji)
+
+        # Check burn eligibility
+        await asyncio.sleep(3)
+        await maybe_tag_burn(app, client, channel, best)
 
     except Exception:
         import traceback
@@ -151,7 +233,7 @@ async def do_drop(app, client):
 
 
 # ─────────────────────────────────────────────
-#  Wait for the drop message
+#  Wait for drop message
 # ─────────────────────────────────────────────
 async def wait_for_drop(client, channel, timeout=15):
     def check(m):
@@ -166,21 +248,153 @@ async def wait_for_drop(client, channel, timeout=15):
 
 
 # ─────────────────────────────────────────────
-#  Parse drop embed (text fallback, OCR comes later)
+#  k!lu with cooldown handling
+# ─────────────────────────────────────────────
+async def lookup_wishes(app, client, channel, card_name):
+    # Enforce cooldown
+    elapsed = time.time() - getattr(app, "_last_lu_time", 0)
+    if elapsed < LU_COOLDOWN_SECS:
+        wait = LU_COOLDOWN_SECS - elapsed
+        app.ui_log(f"   ⏳ k!lu cooldown — waiting {wait:.1f}s")
+        await asyncio.sleep(wait)
+
+    await channel.send(f"k!lu {card_name}")
+    app._last_lu_time = time.time()
+
+    def check(m):
+        return (m.channel.id == channel.id and
+                m.author.id == KARUTA_ID and
+                (m.embeds or "cannot use that command" in m.content.lower()))
+    try:
+        msg = await client.wait_for("message", check=check, timeout=15)
+
+        # Cooldown error — parse exact seconds and retry
+        if "cannot use that command" in msg.content.lower():
+            secs_match = re.search(r'(\d+)\s*second', msg.content, re.IGNORECASE)
+            wait_secs  = int(secs_match.group(1)) + 1 if secs_match else LU_COOLDOWN_SECS
+            app.ui_log(f"   ⏳ k!lu cooldown from Karuta — waiting {wait_secs}s")
+            await asyncio.sleep(wait_secs)
+            await channel.send(f"k!lu {card_name}")
+            app._last_lu_time = time.time()
+            try:
+                msg = await client.wait_for("message", check=check, timeout=15)
+            except asyncio.TimeoutError:
+                app.ui_log("⚠ k!lu retry timed out")
+                return 0
+
+        for embed in msg.embeds:
+            parts = [str(embed.title or ""), str(embed.description or "")]
+            for f in embed.fields:
+                parts += [str(f.name or ""), str(f.value or "")]
+            text  = " ".join(parts).replace("**", "")
+            match = re.search(r'Wishlisted\s*[·:\-]?\s*([\d,]+)', text, re.IGNORECASE)
+            if match:
+                count = int(match.group(1).replace(",", ""))
+                app.ui_log(f"   ♥ Wishlisted: {count}")
+                return count
+
+    except asyncio.TimeoutError:
+        app.ui_log("⚠ k!lu timed out")
+
+    return 0
+
+
+# ─────────────────────────────────────────────
+#  Burn tagging (no k!burn — safe)
+# ─────────────────────────────────────────────
+async def maybe_tag_burn(app, client, channel, card):
+    if not (card.get("print", 99999) > 100 and card.get("wishes", 0) < 10):
+        return
+
+    app.ui_log(f"🔥 {card['name']} eligible for burn (#{card['print']}, "
+               f"{card['wishes']} wishes) — tagging...")
+
+    await channel.send("k!tag burn")
+
+    def check(m):
+        return (m.channel.id == channel.id and m.author.id == KARUTA_ID)
+    try:
+        msg = await client.wait_for("message", check=check, timeout=10)
+        if "does not exist" in msg.content.lower():
+            app.ui_log("   📌 Creating 'burn' tag...")
+            await channel.send("k!tagcreate burn :fire:")
+            await asyncio.sleep(2)
+            await channel.send("k!tag burn")
+            app.ui_log("   ✅ Tagged for burn.")
+        else:
+            app.ui_log("   ✅ Tagged for burn.")
+    except asyncio.TimeoutError:
+        app.ui_log("   ⚠ Tag response timed out")
+
+
+# ─────────────────────────────────────────────
+#  Daily
+# ─────────────────────────────────────────────
+async def do_daily(app, client, channel):
+    app.ui_log("📅 Claiming daily...")
+    await channel.send("k!daily")
+
+    def check(m):
+        return m.channel.id == channel.id and m.author.id == KARUTA_ID
+
+    try:
+        msg = await client.wait_for("message", check=check, timeout=10)
+
+        if "already" in msg.content.lower():
+            app.ui_log("   📅 Daily already claimed.")
+            return
+
+        # Karuta sends a message with buttons — click the first button to open quiz
+        if msg.components:
+            try:
+                # First row, first button = open quiz
+                first_btn = msg.components[0].children[0]
+                await first_btn.click()
+                app.ui_log("   📅 Opened daily quiz...")
+                await asyncio.sleep(2)
+
+                # Wait for the quiz message with answer buttons
+                quiz_msg = await client.wait_for("message", check=check, timeout=10)
+                if quiz_msg.components:
+                    # Click the first answer button — answer doesn't matter
+                    answer_btn = quiz_msg.components[0].children[0]
+                    await answer_btn.click()
+                    app.ui_log("   ✅ Daily quiz answered!")
+                else:
+                    app.ui_log("   ⚠ No answer buttons found on quiz")
+            except Exception as e:
+                app.ui_log(f"   ⚠ Daily button click failed: {e}")
+        else:
+            app.ui_log("   ✅ Daily claimed!")
+
+    except asyncio.TimeoutError:
+        app.ui_log("   ⚠ Daily timed out")
+
+
+# Vote intentionally not automated — requires browser interaction
+
+
+# ─────────────────────────────────────────────
+#  Visit
+# ─────────────────────────────────────────────
+async def do_visit(app, client, channel):
+    app.ui_log("🏛 Visiting shrine...")
+    await channel.send("k!visit")
+    def check(m):
+        return m.channel.id == channel.id and m.author.id == KARUTA_ID
+    try:
+        msg = await client.wait_for("message", check=check, timeout=10)
+        app.ui_log(f"   🏛 Visit: {msg.content[:80]}")
+    except asyncio.TimeoutError:
+        app.ui_log("   ⚠ Visit timed out")
+
+
+# ─────────────────────────────────────────────
+#  Parse drop embed (OCR fallback)
 # ─────────────────────────────────────────────
 def parse_drop_embed(app, message):
     cards = []
     try:
-        # Debug: log full embed structure
-        for ei, embed in enumerate(message.embeds):
-            app.ui_log(
-                f"🔍 Embed {ei}: title={embed.title!r} "
-                f"desc={str(embed.description)[:80]!r} "
-                f"fields={len(embed.fields)} image={bool(embed.image)}")
-            for fi, field in enumerate(embed.fields):
-                app.ui_log(f"   Field {fi}: name={field.name!r} value={field.value!r}")
-
-        # Try embed fields first
         for embed in message.embeds:
             for i, field in enumerate(embed.fields[:3]):
                 name      = field.name.strip() if field.name else f"Card {i+1}"
@@ -191,7 +405,6 @@ def parse_drop_embed(app, message):
             if cards:
                 break
 
-        # Fallback: description
         if not cards and message.embeds:
             desc   = str(message.embeds[0].description or "")
             names  = re.findall(r'\*\*(.+?)\*\*', desc)
@@ -200,83 +413,42 @@ def parse_drop_embed(app, message):
                 print_num = int(prints[i]) if i < len(prints) else 99999
                 cards.append({"name": name, "print": print_num, "wishes": 0, "index": i})
 
-        # Last resort
         if not cards:
-            app.ui_log("⚠ No cards parsed from embed — OCR needed.")
             cards = [{"name": "Unknown", "print": 99999, "wishes": 0, "index": 0}]
 
     except Exception:
         import traceback
-        app.ui_log(f"⚠ Parse error: {traceback.format_exc()}")
+        app.ui_log(f"⚠ Embed parse error: {traceback.format_exc()}")
         cards = [{"name": "Unknown", "print": 99999, "wishes": 0, "index": 0}]
 
     return cards
 
 
 # ─────────────────────────────────────────────
-#  k!lu wishlist lookup
-# ─────────────────────────────────────────────
-async def lookup_wishes(app, client, channel, card_name):
-    await channel.send(f"k!lu {card_name}")
-
-    def check(m):
-        return (m.channel.id == channel.id and
-                m.author.id == KARUTA_ID and
-                m.embeds)
-    try:
-        msg = await client.wait_for("message", check=check, timeout=12)
-        for embed in msg.embeds:
-            # Full debug dump so we can see exact structure
-            app.ui_log(f"[LU] title={embed.title!r}")
-            app.ui_log(f"[LU] desc={str(embed.description or '')[:200]!r}")
-            for fi, f in enumerate(embed.fields):
-                app.ui_log(f"[LU] field[{fi}] name={f.name!r} value={f.value!r}")
-
-            # Build searchable text from every possible location
-            parts = [
-                str(embed.title or ""),
-                str(embed.description or ""),
-            ]
-            for f in embed.fields:
-                parts.append(str(f.name or ""))
-                parts.append(str(f.value or ""))
-            # Strip markdown bold markers — Karuta uses **value** formatting
-            text = " ".join(parts).replace("**", "")
-
-            # Format: "Wishlisted · 1"
-            match = re.search(r'Wishlisted\s*[·:\-]?\s*([\d,]+)', text, re.IGNORECASE)
-            if match:
-                count = int(match.group(1).replace(",", ""))
-                app.ui_log(f"   ♥ Wishlisted: {count}")
-                return count
-            app.ui_log("[LU] Could not find Wishlisted count in embed")
-    except asyncio.TimeoutError:
-        app.ui_log("⚠ k!lu timed out")
-    return 0
-
-
-# ─────────────────────────────────────────────
 #  Card scoring
 # ─────────────────────────────────────────────
 def pick_best_card(app, cards):
-    LOW_PRINT = 100
-
-    # Instant grab for ultra low print
     for i, card in enumerate(cards):
-        if card["print"] < LOW_PRINT:
+        if card["print"] < 100:
             app.ui_log(f"🔥 Auto-grabbing {card['name']} — ultra low print #{card['print']}!")
             return i
 
-    # Score: equal weight on print rank + wish count
     max_print  = max(c["print"]  for c in cards) or 1
     max_wishes = max(c["wishes"] for c in cards) or 1
 
     best_score, best_idx = -1, 0
     for i, card in enumerate(cards):
-        print_score = 1 - (card["print"] / max_print)
-        wish_score  = card["wishes"] / max_wishes
-        total       = (print_score + wish_score) / 2
-        if total > best_score:
-            best_score, best_idx = total, i
+        score = ((1 - card["print"] / max_print) + card["wishes"] / max_wishes) / 2
+        if score > best_score:
+            best_score, best_idx = score, i
 
     return best_idx
+
+
+# ─────────────────────────────────────────────
+#  Manual drop (called from UI button)
+# ─────────────────────────────────────────────
+async def do_drop_manual(app, client):
+    channel = client.get_channel(int(app.channel_var.get().strip()))
+    if channel:
+        await do_drop(app, client, channel)
