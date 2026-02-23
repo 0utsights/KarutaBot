@@ -142,7 +142,7 @@ def _ocr_print(reader, img):
 
 
 # ── Main parser ────────────────────────────────────────────────────────────────
-def parse_drop_image(image_url, log_fn=None, viewer=None):
+def parse_drop_image(image_url, log_fn=None):
     def log(msg):
         if log_fn:
             log_fn(msg)
@@ -165,15 +165,6 @@ def parse_drop_image(image_url, log_fn=None, viewer=None):
     if DEBUG_CROPS:
         os.makedirs(DEBUG_DIR, exist_ok=True)
         img.save(os.path.join(DEBUG_DIR, "full_drop.png"))
-
-    if viewer:
-        try:
-            from ocr_viewer import annotate_image
-            viewer.show_full_image(annotate_image(img,
-                NAME_TOP, NAME_BOTTOM, SERIES_TOP, SERIES_BOTTOM, PRINT_TOP, PRINT_BOTTOM))
-            viewer.set_status("Scanning cards...")
-        except Exception as e:
-            log(f"Viewer error: {e}")
 
     width, height = img.size
     card_width = width // 3
@@ -201,13 +192,10 @@ def parse_drop_image(image_url, log_fn=None, viewer=None):
             series_crop.save(os.path.join(DEBUG_DIR, f"card{i+1}_series_processed.png"))
             print_crop.save(os.path.join(DEBUG_DIR,  f"card{i+1}_print_processed.png"))
 
-        if viewer: viewer.highlight_processing(i, "name")
         raw_name   = _ocr_text(reader, name_crop)
 
-        if viewer: viewer.highlight_processing(i, "series")
         raw_series = _ocr_text(reader, series_crop)
 
-        if viewer: viewer.highlight_processing(i, "print")
         raw_print  = _ocr_print(reader, print_crop)
 
         log(f"Card {i+1} raw — name: {raw_name!r}  series: {raw_series!r}  print: {raw_print!r}")
@@ -217,11 +205,6 @@ def parse_drop_image(image_url, log_fn=None, viewer=None):
         print_num = _clean_print(raw_print)
 
         log(f"   -> name: {name!r}  series: {series!r}  print: #{print_num}")
-
-        if viewer:
-            viewer.update_card(i, "name",   raw_name,   name)
-            viewer.update_card(i, "series", raw_series, series)
-            viewer.update_card(i, "print",  raw_print,  f"#{print_num}")
 
         cards.append({
             "name":   name if name else f"Card {i+1}",
