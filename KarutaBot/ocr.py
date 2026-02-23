@@ -1,5 +1,5 @@
 """
-ocr.py — Karuta drop image parser using EasyOCR
+ocr.py — Aeyori image parser using EasyOCR
 
 EasyOCR is installed via pip and downloads its model automatically on first run.
 No separate program installation required.
