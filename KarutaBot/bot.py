@@ -66,6 +66,12 @@ async def fetch_reminders(app, client, channel):
 
     result = {}
     for embed in msg.embeds:
+        # Raw debug dump so we can see exact reminder format
+        app.ui_log(f"[REM] title={embed.title!r}")
+        app.ui_log(f"[REM] desc={str(embed.description or '')[:300]!r}")
+        for fi, f in enumerate(embed.fields):
+            app.ui_log(f"[REM] field[{fi}] name={f.name!r} value={f.value!r}")
+
         text = " ".join([
             str(embed.title or ""),
             str(embed.description or ""),
@@ -344,28 +350,40 @@ async def do_daily(app, client, channel):
             app.ui_log("   📅 Daily already claimed.")
             return
 
-        # Karuta sends a message with buttons — click the first button to open quiz
+        # Log all buttons for debug
+        if msg.components:
+            for ri, row in enumerate(msg.components):
+                for bi, btn in enumerate(row.children):
+                    label = getattr(btn, "label", None) or getattr(btn, "emoji", "?")
+                    app.ui_log(f"   [daily] button[{ri}][{bi}] = {label!r}")
+
         if msg.components:
             try:
-                # First row, first button = open quiz
+                # Step 1: click first button (opens quiz) — label irrelevant
                 first_btn = msg.components[0].children[0]
                 await first_btn.click()
-                app.ui_log("   📅 Opened daily quiz...")
+                app.ui_log("   📅 Clicked quiz button, waiting for follow-up...")
                 await asyncio.sleep(2)
 
-                # Wait for the quiz message with answer buttons
-                quiz_msg = await client.wait_for("message", check=check, timeout=10)
-                if quiz_msg.components:
-                    # Click the first answer button — answer doesn't matter
-                    answer_btn = quiz_msg.components[0].children[0]
+                # Step 2: wait for follow-up message (Yes/No or whatever buttons)
+                followup = await client.wait_for("message", check=check, timeout=12)
+
+                # Log followup buttons for debug
+                if followup.components:
+                    for ri, row in enumerate(followup.components):
+                        for bi, btn in enumerate(row.children):
+                            label = getattr(btn, "label", None) or getattr(btn, "emoji", "?")
+                            app.ui_log(f"   [daily followup] button[{ri}][{bi}] = {label!r}")
+                    # Click first button regardless of label
+                    answer_btn = followup.components[0].children[0]
                     await answer_btn.click()
-                    app.ui_log("   ✅ Daily quiz answered!")
+                    app.ui_log("   ✅ Daily answered!")
                 else:
-                    app.ui_log("   ⚠ No answer buttons found on quiz")
+                    app.ui_log(f"   ⚠ No buttons on followup. Content: {followup.content[:80]!r}")
             except Exception as e:
                 app.ui_log(f"   ⚠ Daily button click failed: {e}")
         else:
-            app.ui_log("   ✅ Daily claimed!")
+            app.ui_log(f"   📅 No buttons found. Content: {msg.content[:80]!r}")
 
     except asyncio.TimeoutError:
         app.ui_log("   ⚠ Daily timed out")
