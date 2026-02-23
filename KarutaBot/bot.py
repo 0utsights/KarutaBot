@@ -29,7 +29,7 @@ def run_discord_loop(app, token, channel_id):
         except discord.LoginFailure:
             app.ui_log("❌ Invalid token — please update your Discord token.")
             app.ui_set_status("Invalid Token", online=False)
-            app.root.after(0, app.stop_bot)
+            app.app.root.after(0, app.stop_bot)
         except Exception:
             import traceback
             err = traceback.format_exc()
@@ -81,7 +81,7 @@ async def do_drop(app, client):
         await channel.send("k!drop")
         app.drops_today += 1
         app.ui_log(f"🃏 Dropped! ({app.drops_today}/{app.max_drops_var.get()} today)")
-        app.root.after(0, app.update_drops_label)
+        app.app.root.after(0, app.update_drops_label)
 
         # Wait for the drop message
         drop_msg = await wait_for_drop(client, channel)
@@ -99,7 +99,7 @@ async def do_drop(app, client):
                 viewer = None
                 try:
                     from ocr_viewer import OCRViewer
-                    viewer = OCRViewer(app.root)
+                    viewer = OCRViewer(app.app.root)
                     viewer.set_status("Downloading drop image...")
                 except Exception as e:
                     app.ui_log(f"⚠ Viewer failed to open: {e}")
