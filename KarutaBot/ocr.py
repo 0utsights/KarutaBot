@@ -54,15 +54,37 @@ def check_easyocr():
 
 
 # ── Text cleanup ───────────────────────────────────────────────────────────────
+def _fix_mid_word_caps(name):
+    """Lowercase a capital letter that follows another capital and precedes lowercase.
+    Fixes OCR artefacts like MObile->Mobile, ZEta->Zeta, GOdfather->Godfather.
+    Leaves intentional all-caps (ARMS, DBZ) and normal title-case untouched.
+    """
+    return re.sub(r'(?<=[A-Z])([A-Z])(?=[a-z])', lambda m: m.group(1).lower(), name)
+
+
 def _clean_name(raw):
-    """Strip junk and restore missing spaces from OCR output."""
+    """Strip junk, fix mid-word stray caps, and restore missing spaces from OCR output."""
     name = re.sub(r'[^\x20-\x7E]', ' ', raw)
     name = re.sub(r'^[^A-Z]+', '', name)
     name = re.sub(r'[^A-Za-z0-9!?:.]+$', '', name)
     name = re.sub(r'\s+', ' ', name).strip()
-    # Strip leading all-caps noise prefix before a real capitalised word
-    name = re.sub(r'^[A-Z]{1,3}(?=[A-Z][a-z])', '', name)
-    # Restore spaces Tesseract/EasyOCR dropped
+
+    # Fix mid-word stray caps first (MObile->Mobile).
+    # Must run before prefix strip so M in MObile isn't mistaken for a junk prefix.
+    name = _fix_mid_word_caps(name)
+
+    # Strip 2+ leading all-caps chars before lowercase — frame border noise (CUlifis->Lifis).
+    # After fix_mid_word_caps, real words like "Mobile" are clean so this won't touch them.
+    name = re.sub(r'^[A-Z]{2,}(?=[a-z])', '', name)
+
+    # Capitalise if strip left a lowercase start
+    if name and name[0].islower():
+        name = name[0].upper() + name[1:]
+
+    # Fix lone ! misread as I between words (e.g. "The Girl ! Like" -> "The Girl I Like")
+    name = re.sub(r'(?<= )!(?= )', 'I', name)
+
+    # Restore spaces EasyOCR dropped between words
     name = re.sub(r'([a-z])([A-Z])', r'\1 \2', name)
     name = re.sub(r'([A-Z])([A-Z][a-z])', r'\1 \2', name)
     name = re.sub(r'([A-Za-z])(\d)', r'\1 \2', name)
