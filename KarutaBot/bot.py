@@ -240,10 +240,10 @@ async def lookup_wishes(app, client, channel, card_name):
             for f in embed.fields:
                 parts.append(str(f.name or ""))
                 parts.append(str(f.value or ""))
-            text = " ".join(parts)
+            # Strip markdown bold markers — Karuta uses **value** formatting
+            text = " ".join(parts).replace("**", "")
 
-            # Try all known formats:
-            # "Wishlisted · 1"  "Wishlisted: 1"  "Wishlisted 1"
+            # Format: "Wishlisted · 1"
             match = re.search(r'Wishlisted\s*[·:\-]?\s*([\d,]+)', text, re.IGNORECASE)
             if match:
                 count = int(match.group(1).replace(",", ""))
