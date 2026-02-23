@@ -8,7 +8,7 @@ from gui import KarutaApp
 
 def show_key_screen():
     win = tk.Tk()
-    win.title("Karuta Bot — Activate")
+    win.title("Aeyori — Activate")
     win.geometry("360x220")
     win.resizable(False, False)
     win.configure(bg=C["bg"])

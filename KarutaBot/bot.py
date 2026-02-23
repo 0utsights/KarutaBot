@@ -83,7 +83,7 @@ async def do_drop(app, client):
         app.ui_log(f"🃏 Dropped! ({app.drops_today}/{app.max_drops_var.get()} today)")
         app.root.after(0, app.update_drops_label)
 
-        # Wait for Karuta's drop message
+        # Wait for the drop message
         drop_msg = await wait_for_drop(client, channel)
         if not drop_msg:
             app.ui_log("⚠ Couldn't find drop message, skipping grab.")
@@ -151,7 +151,7 @@ async def do_drop(app, client):
 
 
 # ─────────────────────────────────────────────
-#  Wait for Karuta's drop message
+#  Wait for the drop message
 # ─────────────────────────────────────────────
 async def wait_for_drop(client, channel, timeout=15):
     def check(m):
@@ -171,7 +171,7 @@ async def wait_for_drop(client, channel, timeout=15):
 def parse_drop_embed(app, message):
     cards = []
     try:
-        # Debug: log full embed structure so we can see what Karuta sends
+        # Debug: log full embed structure
         for ei, embed in enumerate(message.embeds):
             app.ui_log(
                 f"🔍 Embed {ei}: title={embed.title!r} "

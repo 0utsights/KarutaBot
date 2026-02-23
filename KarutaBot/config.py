@@ -2,6 +2,12 @@ import json
 import os
 
 # ─────────────────────────────────────────────
+#  App branding
+# ─────────────────────────────────────────────
+APP_NAME          = "Aeyori"
+APP_VERSION       = "1.0.0"
+
+# ─────────────────────────────────────────────
 #  Constants
 # ─────────────────────────────────────────────
 SERVER_URL        = "https://karutabot-production.up.railway.app"
@@ -12,31 +18,57 @@ DROP_JITTER_MAX   = 6
 KARUTA_ID         = 646937666251915264
 
 # ─────────────────────────────────────────────
-#  Color theme
+#  Glass dark color theme
 # ─────────────────────────────────────────────
 C = {
-    "bg":      "#2b2d31",
-    "card":    "#313338",
-    "dark":    "#1e1f22",
-    "accent":  "#5865f2",
-    "accent2": "#4752c4",
-    "green":   "#23a55a",
-    "red":     "#f23f43",
-    "yellow":  "#f0b232",
-    "text":    "#dbdee1",
-    "muted":   "#949ba4",
-    "white":   "#ffffff",
+    "bg":       "#0a0e1a",       # deep navy background
+    "bg2":      "#0f1528",       # slightly lighter bg
+    "card":     "#111827",       # glass card base
+    "card2":    "#1a2235",       # elevated card
+    "border":   "#1e2d47",       # subtle border
+    "accent":   "#00d4ff",       # cyan accent
+    "accent2":  "#0099cc",       # darker cyan
+    "accent3":  "#00ff9d",       # green accent
+    "glow":     "#00d4ff33",     # accent glow (transparent)
+    "green":    "#00e676",
+    "red":      "#ff4569",
+    "yellow":   "#ffd740",
+    "text":     "#e8f0fe",
+    "muted":    "#546e8a",
+    "white":    "#ffffff",
+    "dark":     "#070b14",
 }
 
 # ─────────────────────────────────────────────
-#  Config file helpers
+#  Config helpers — supports multiple accounts
 # ─────────────────────────────────────────────
+def default_account():
+    return {
+        "name":       "Account 1",
+        "token":      "",
+        "channel_id": "",
+        "max_drops":  MAX_DROPS_PER_DAY,
+        "jitter":     DROP_JITTER_MAX,
+        "enabled":    True,
+    }
+
 def load_config():
     if os.path.exists(CONFIG_FILE):
         with open(CONFIG_FILE) as f:
-            return json.load(f)
-    return {"token": "", "channel_id": "", "max_drops": MAX_DROPS_PER_DAY}
+            data = json.load(f)
+        # Migrate old single-account format
+        if "accounts" not in data:
+            data = {"accounts": [{
+                "name":       "Account 1",
+                "token":      data.get("token", ""),
+                "channel_id": data.get("channel_id", ""),
+                "max_drops":  data.get("max_drops", MAX_DROPS_PER_DAY),
+                "jitter":     DROP_JITTER_MAX,
+                "enabled":    True,
+            }]}
+        return data
+    return {"accounts": [default_account()]}
 
 def save_config(data):
     with open(CONFIG_FILE, "w") as f:
-        json.dump(data, f)
+        json.dump(data, f, indent=2)
