@@ -149,7 +149,7 @@ class AccountPanel:
         tk.Label(creds, text="VISIT CARD CODE", font=("Segoe UI", 7, "bold"),
                  bg=C["card2"], fg=C["muted"]).grid(row=0, column=2, sticky="w", padx=(16, 0))
         self.visit_card_var = tk.StringVar(value=self.data.get("visit_card_code", ""))
-        ve = _entry(creds, self.visit_card_var, width=14)
+        ve = _entry(creds, self.visit_card_var, width=12)
         ve.grid(row=1, column=2, sticky="ew", pady=(2, 6), padx=(16, 0), ipady=5)
 
         # ── Settings row ──
