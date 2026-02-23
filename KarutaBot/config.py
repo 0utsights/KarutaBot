@@ -14,6 +14,7 @@ SERVER_URL        = "https://karutabot-production.up.railway.app"
 CONFIG_FILE       = "config.json"
 MAX_DROPS_PER_DAY = 40
 DROP_COOLDOWN_MIN = 30
+DROP_JITTER_MIN   = 2
 DROP_JITTER_MAX   = 6
 KARUTA_ID         = 646937666251915264
 
@@ -48,7 +49,8 @@ def default_account():
         "token":      "",
         "channel_id": "",
         "max_drops":  MAX_DROPS_PER_DAY,
-        "jitter":     DROP_JITTER_MAX,
+        "jitter_min":  DROP_JITTER_MIN,
+        "jitter_max":  DROP_JITTER_MAX,
         "enabled":    True,
     }
 
@@ -63,7 +65,8 @@ def load_config():
                 "token":      data.get("token", ""),
                 "channel_id": data.get("channel_id", ""),
                 "max_drops":  data.get("max_drops", MAX_DROPS_PER_DAY),
-                "jitter":     DROP_JITTER_MAX,
+                "jitter_min":  DROP_JITTER_MIN,
+                "jitter_max":  DROP_JITTER_MAX,
                 "enabled":    True,
             }]}
         return data
