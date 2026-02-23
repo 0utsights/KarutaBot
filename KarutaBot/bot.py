@@ -374,43 +374,35 @@ async def do_daily(app, client, channel):
         try:
             # Step 1: click the Quiz button (first button)
             quiz_btn = msg.components[0].children[0]
-            app.ui_log(f"   [daily] msg.id={msg.id}  cached={msg.id in {m.id for m in client.cached_messages}}")
             await quiz_btn.click()
-            app.ui_log("   📅 Clicked Quiz button, watching for edit...")
+            app.ui_log("   📅 Clicked Quiz button, waiting for edit...")
 
-            # Step 2: Karuta edits the SAME message to show Yes/No
-            # Attach a raw listener via on_raw_message_edit as fallback since
-            # message_edit only fires if the message is in discord.py's cache
-            edit_future = client.loop.create_future()
+            # Step 2: message is cached so message_edit will fire
+            # Poll the message directly every second for up to 15s
+            # as a reliable alternative to event-based listening
+            after_msg = None
+            for _ in range(15):
+                await asyncio.sleep(1)
+                try:
+                    refreshed = await channel.fetch_message(msg.id)
+                    if refreshed.components:
+                        for ri, row in enumerate(refreshed.components):
+                            for bi, btn in enumerate(row.children):
+                                label = getattr(btn, "label", None) or getattr(btn, "emoji", "?")
+                                app.ui_log(f"   [daily edit] button[{ri}][{bi}] = {label!r}")
+                        after_msg = refreshed
+                        break
+                    else:
+                        app.ui_log(f"   [daily] polling... no buttons yet")
+                except Exception as e:
+                    app.ui_log(f"   [daily] fetch error: {e}")
 
-            async def _on_raw_edit(payload):
-                if payload.message_id == msg.id and not edit_future.done():
-                    app.ui_log(f"   [daily] raw edit fired — fetching updated message")
-                    try:
-                        updated = await channel.fetch_message(msg.id)
-                        app.ui_log(f"   [daily] updated components: {bool(updated.components)}")
-                        if updated.components:
-                            for ri, row in enumerate(updated.components):
-                                for bi, btn in enumerate(row.children):
-                                    label = getattr(btn, "label", None) or getattr(btn, "emoji", "?")
-                                    app.ui_log(f"   [daily edit] button[{ri}][{bi}] = {label!r}")
-                            edit_future.set_result(updated)
-                        else:
-                            app.ui_log("   [daily] edit had no components yet")
-                    except Exception as e:
-                        app.ui_log(f"   [daily] fetch error: {e}")
-
-            client.add_listener(_on_raw_edit, "on_raw_message_edit")
-
-            try:
-                after_msg = await asyncio.wait_for(edit_future, timeout=15)
+            if after_msg:
                 answer_btn = after_msg.components[0].children[0]
                 await answer_btn.click()
                 app.ui_log("   ✅ Daily answered!")
-            except asyncio.TimeoutError:
-                app.ui_log("   ⚠ Timed out waiting for quiz edit — message may not be cached")
-            finally:
-                client.remove_listener(_on_raw_edit, "on_raw_message_edit")
+            else:
+                app.ui_log("   ⚠ Quiz buttons never appeared after 15s")
 
         except Exception as e:
             import traceback
