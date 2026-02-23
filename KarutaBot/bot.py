@@ -167,6 +167,10 @@ async def automation_loop(app, client, channel_id):
 
         await do_drop(app, client, channel)
 
+        # Re-fetch reminders after all commands so badges reflect current state
+        await asyncio.sleep(2)
+        reminders = await fetch_reminders(app, client, channel)
+
         # Base cooldown from k!reminders Drop value (seconds), fall back to flat 30 min
         # Add random jitter between user-configured min and max
         base_secs = reminders.get("Drop") or (DROP_COOLDOWN_MIN * 60)
