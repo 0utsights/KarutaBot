@@ -213,20 +213,11 @@ async def do_drop(app, client, channel):
             from ocr import parse_drop_image, check_easyocr
             ok, _ = check_easyocr()
             if ok:
-                viewer = None
-                try:
-                    from ocr_viewer import OCRViewer
-                    viewer = OCRViewer(app.app.root)
-                    viewer.set_status("Downloading drop image...")
-                except Exception as e:
-                    app.ui_log(f"⚠ Viewer error: {e}")
                 cards = parse_drop_image(
                     drop_msg.attachments[0].url,
                     log_fn=app.ui_log,
-                    viewer=viewer
+                    viewer=None
                 )
-                if viewer and cards:
-                    viewer.show_result(cards)
 
         if not cards:
             cards = parse_drop_embed(app, drop_msg)
