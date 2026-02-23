@@ -192,6 +192,21 @@ class AccountPanel:
         remove_btn.bind("<Leave>", lambda e: remove_btn.config(fg=C["muted"]))
         remove_btn.pack(side="right")
 
+        # ── Reminders status bar ──
+        rem_frame = tk.Frame(self.frame, bg=C["card2"])
+        rem_frame.pack(fill="x", padx=14, pady=(0, 6))
+
+        self._reminder_labels = {}
+        for key in ["Daily", "Vote", "Drop", "Grab", "Work", "Visit"]:
+            col = tk.Frame(rem_frame, bg=C["dark"], padx=8, pady=4)
+            col.pack(side="left", padx=(0, 4))
+            tk.Label(col, text=key.upper(), font=("Segoe UI", 6, "bold"),
+                     bg=C["dark"], fg=C["muted"]).pack()
+            lbl = tk.Label(col, text="?", font=("Segoe UI", 7, "bold"),
+                           bg=C["dark"], fg=C["muted"])
+            lbl.pack()
+            self._reminder_labels[key] = lbl
+
         # ── Log box ──
         self.log_box = scrolledtext.ScrolledText(
             self.frame, height=5, width=70,
@@ -231,6 +246,29 @@ class AccountPanel:
         limit = self.max_drops_var.get()
         color = C["accent3"] if self.drops_today < limit else C["red"]
         self.drops_label.config(text=f"{self.drops_today} / {limit}", fg=color)
+
+    def update_reminders(self, reminders):
+        """Update the reminder status badges. reminders = {key: seconds_or_None}"""
+        for key, val in reminders.items():
+            if key not in self._reminder_labels:
+                continue
+            lbl = self._reminder_labels[key]
+            if val is None:
+                lbl.config(text="?", fg=C["muted"])
+            elif val == 0:
+                lbl.config(text="READY", fg=C["accent3"])
+            else:
+                # Format as Xh Ym or Xm
+                h = int(val) // 3600
+                m = (int(val) % 3600) // 60
+                s = int(val) % 60
+                if h > 0:
+                    txt = f"{h}h {m}m"
+                elif m > 0:
+                    txt = f"{m}m"
+                else:
+                    txt = f"{s}s"
+                lbl.config(text=txt, fg=C["yellow"])
 
     def reset_daily_if_needed(self):
         today = datetime.now().date()
@@ -297,7 +335,8 @@ class AccountPanel:
     def manual_drop(self):
         if self.client and self.loop:
             import asyncio
-            asyncio.run_coroutine_threadsafe(do_drop(self, self.client), self.loop)
+            from bot import do_drop_manual
+            asyncio.run_coroutine_threadsafe(do_drop_manual(self, self.client), self.loop)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
