@@ -555,10 +555,129 @@ async def _poll_visit_msg(app, channel, msg_id, timeout=15):
 
 
 # ─────────────────────────────────────────────
+#  Affection list parser
+# ─────────────────────────────────────────────
+def _parse_affectionlist_desc(desc):
+    """Parse k!affectionlist embed description into a list of card dicts.
+
+    Each entry looks like:
+    `1`. [emojis] · `5 ■` · `18 AR` · `3 AP` · `nkkmpd` · **Mikasa Ackerman** · Series
+
+    Returns list of {code, name, energy, ar, ap, score}
+    """
+    cards = []
+    # Each numbered entry starts with `N`.
+    for entry in re.split(r'(?=`\d+`\.)', desc):
+        entry = entry.strip()
+        if not entry:
+            continue
+
+        energy_m = re.search(r'`(\d+)\s*■`', entry)
+        ar_m     = re.search(r'`(\d+)\s*AR`', entry)
+        ap_m     = re.search(r'`(\d+)\s*AP`', entry)
+        # Card code: short alphanumeric in backticks, appears after AP field
+        # Extract all backtick tokens, code is the one that isn't a number or stat
+        codes    = re.findall(r'`([a-z0-9]{4,8})`', entry)
+        # Filter out stat tokens like "5 ■", "18 AR" etc — those have spaces/symbols
+        # after stripping: what remains are pure alphanumeric codes
+        pure_codes = [c for c in codes if re.fullmatch(r'[a-z0-9]+', c) and not c.isdigit()]
+        name_m   = re.search(r'\*\*(.+?)\*\*', entry)
+
+        if not (energy_m and pure_codes):
+            continue
+
+        energy = int(energy_m.group(1))
+        ar     = int(ar_m.group(1)) if ar_m else 0
+        ap     = int(ap_m.group(1)) if ap_m else 0
+        code   = pure_codes[0]
+        name   = name_m.group(1) if name_m else code
+        score  = ar * 2 + ap  # 2 AP = 1 AR, so AR is worth 2x
+
+        cards.append({"code": code, "name": name, "energy": energy,
+                      "ar": ar, "ap": ap, "score": score})
+    return cards
+
+
+async def _fetch_affectionlist(app, client, channel):
+    """Send k!affectionlist, handle pagination, return all parsed cards."""
+    all_cards = []
+
+    await channel.send("k!affectionlist")
+    def check_al(m):
+        return m.channel.id == channel.id and m.author.id == KARUTA_ID
+
+    page = 1
+    while True:
+        try:
+            al_msg = await client.wait_for("message", check=check_al, timeout=12)
+        except asyncio.TimeoutError:
+            app.ui_log("   ⚠ k!affectionlist timed out")
+            break
+
+        desc = ""
+        for emb in al_msg.embeds:
+            if emb.description:
+                desc += str(emb.description)
+
+        cards = _parse_affectionlist_desc(desc)
+        all_cards.extend(cards)
+        app.ui_log(f"   📋 Affectionlist page {page}: {len(cards)} characters parsed")
+        for c in cards:
+            app.ui_log(f"      {c['name']} ({c['code']}) — energy={c['energy']} AR={c['ar']} AP={c['ap']} score={c['score']}")
+
+        # Check for a Next button to paginate
+        next_btn = _find_button(al_msg.components, "next") if al_msg.components else None
+        if next_btn and not getattr(next_btn, "disabled", False):
+            try:
+                await next_btn.click()
+                page += 1
+                await asyncio.sleep(1)
+            except Exception as e:
+                app.ui_log(f"   ⚠ Affectionlist next page failed: {e}")
+                break
+        else:
+            break
+
+    return all_cards
+
+
+def _pick_visit_card(cards):
+    """From parsed affectionlist, pick the best card to visit.
+    Priority: highest energy first, then highest score (AR*2 + AP) as tiebreaker.
+    Returns the card dict or None.
+    """
+    if not cards:
+        return None
+    max_energy = max(c["energy"] for c in cards)
+    candidates = [c for c in cards if c["energy"] == max_energy]
+    return max(candidates, key=lambda c: c["score"])
+
+
+# ─────────────────────────────────────────────
 #  Visit
 # ─────────────────────────────────────────────
 async def do_visit(app, client, channel):
-    card_code = app.data.get("visit_card_code", "").strip()
+    # ── Determine which card to visit ──
+    manual_code = app.data.get("visit_card_code", "").strip()
+
+    if manual_code:
+        # Manual override set — skip affectionlist entirely
+        card_code = manual_code
+        app.ui_log(f"🏛 Visiting (manual code: {card_code})")
+    else:
+        # Auto-select via k!affectionlist
+        app.ui_log("🏛 Fetching k!affectionlist to pick best card...")
+        cards = await _fetch_affectionlist(app, client, channel)
+        await asyncio.sleep(1)
+
+        if cards:
+            best = _pick_visit_card(cards)
+            card_code = best["code"]
+            app.ui_log(f"🏛 Selected: {best['name']} ({card_code}) — "
+                       f"energy={best['energy']} score={best['score']}")
+        else:
+            card_code = ""
+            app.ui_log("🏛 No cards parsed from affectionlist — running k!visit with no code")
     cmd       = f"k!visit {card_code}" if card_code else "k!visit"
     app.ui_log(f"🏛 Visiting shrine... ({cmd})")
     await channel.send(cmd)
