@@ -213,11 +213,20 @@ async def do_drop(app, client, channel):
             from ocr import parse_drop_image, check_easyocr
             ok, _ = check_easyocr()
             if ok:
+                viewer = None
+                try:
+                    from ocr_viewer import OCRViewer
+                    viewer = OCRViewer(app.app.root)
+                    viewer.set_status("Downloading drop image...")
+                except Exception as e:
+                    app.ui_log(f"⚠ Viewer error: {e}")
                 cards = parse_drop_image(
                     drop_msg.attachments[0].url,
                     log_fn=app.ui_log,
-                    viewer=None
+                    viewer=viewer
                 )
+                if viewer and cards:
+                    viewer.show_result(cards)
 
         if not cards:
             cards = parse_drop_embed(app, drop_msg)
@@ -467,18 +476,155 @@ async def do_daily(app, client, channel):
 
 
 # ─────────────────────────────────────────────
+# ─────────────────────────────────────────────
+#  Visit helpers
+# ─────────────────────────────────────────────
+def _debug_visit_msg(app, tag, msg):
+    """Log every piece of a message so we can learn the energy format."""
+    app.ui_log(f"   [visit:{tag}] content: {msg.content[:120]!r}")
+    for ei, emb in enumerate(msg.embeds):
+        app.ui_log(f"   [visit:{tag}] embed[{ei}] title={emb.title!r} desc={str(emb.description)[:100]!r}")
+        for fi, field in enumerate(emb.fields):
+            app.ui_log(f"   [visit:{tag}] embed[{ei}].field[{fi}] name={field.name!r} val={field.value!r}")
+    for ri, row in enumerate(msg.components):
+        for bi, btn in enumerate(row.children):
+            lbl   = getattr(btn, "label", None) or ""
+            emoji = getattr(btn, "emoji", None)
+            disabled = getattr(btn, "disabled", False)
+            app.ui_log(f"   [visit:{tag}] btn[{ri}][{bi}] label={lbl!r} emoji={emoji} disabled={disabled}")
+
+
+def _find_button(components, *label_substrings):
+    """Return first non-disabled button whose label contains any of the given substrings (case-insensitive)."""
+    for row in components:
+        for btn in row.children:
+            lbl = (getattr(btn, "label", "") or "").lower()
+            for sub in label_substrings:
+                if sub.lower() in lbl:
+                    return btn
+    return None
+
+
+async def _poll_visit(app, channel, msg_id, timeout=15):
+    """Poll a message until its components change (buttons appear/change). Returns refreshed message or None."""
+    for _ in range(timeout):
+        await asyncio.sleep(1)
+        try:
+            refreshed = await channel.fetch_message(msg_id)
+            _debug_visit_msg(app, "poll", refreshed)
+            if refreshed.components:
+                return refreshed
+        except Exception as e:
+            app.ui_log(f"   [visit] fetch error: {e}")
+    return None
+
+
+# ─────────────────────────────────────────────
 #  Visit
 # ─────────────────────────────────────────────
 async def do_visit(app, client, channel):
-    app.ui_log("🏛 Visiting shrine...")
-    await channel.send("k!visit")
-    def check(m):
+    card_code = app.data.get("visit_card_code", "").strip()
+    cmd       = f"k!visit {card_code}" if card_code else "k!visit"
+    app.ui_log(f"🏛 Visiting shrine... ({cmd})")
+    await channel.send(cmd)
+
+    def check_msg(m):
         return m.channel.id == channel.id and m.author.id == KARUTA_ID
+
     try:
-        msg = await client.wait_for("message", check=check, timeout=10)
-        app.ui_log(f"   🏛 Visit: {msg.content[:80]}")
+        msg = await client.wait_for("message", check=check_msg, timeout=10)
     except asyncio.TimeoutError:
-        app.ui_log("   ⚠ Visit timed out")
+        app.ui_log("   ⚠ Visit timed out waiting for initial message")
+        return
+
+    _debug_visit_msg(app, "initial", msg)
+
+    if not msg.components:
+        app.ui_log("   ⚠ Visit: no buttons on initial message — may already be visited or wrong response")
+        return
+
+    # ── Step 1: click the "Visit" button ──
+    visit_btn = _find_button(msg.components, "visit")
+    if not visit_btn:
+        app.ui_log("   ⚠ Visit: couldn't find Visit button — debug above shows available buttons")
+        return
+
+    try:
+        await visit_btn.click()
+        app.ui_log("   🏛 Clicked Visit button")
+    except Exception as e:
+        app.ui_log(f"   ⚠ Visit: click failed: {e}")
+        return
+
+    # Poll for Talk/Actions/Date/Propose screen
+    msg = await _poll_visit(app, channel, msg.id)
+    if not msg:
+        app.ui_log("   ⚠ Visit: timed out after clicking Visit")
+        return
+
+    # ── Main loop: Talk → Answer → repeat until energy out ──
+    MAX_ROUNDS = 25
+    for round_num in range(1, MAX_ROUNDS + 1):
+        app.ui_log(f"   🏛 Visit round {round_num}")
+        _debug_visit_msg(app, f"round{round_num}_main", msg)
+
+        # ── Find and click Talk ──
+        talk_btn = _find_button(msg.components, "talk")
+        if not talk_btn:
+            app.ui_log("   🏛 Visit: no Talk button found — energy likely exhausted or visit ended")
+            break
+
+        if getattr(talk_btn, "disabled", False):
+            app.ui_log("   🏛 Visit: Talk button is disabled — energy exhausted")
+            break
+
+        try:
+            await talk_btn.click()
+            app.ui_log("   🏛 Clicked Talk")
+        except Exception as e:
+            app.ui_log(f"   ⚠ Visit: Talk click failed: {e}")
+            break
+
+        # Poll for question screen (1/2/3/4 buttons)
+        msg = await _poll_visit(app, channel, msg.id)
+        if not msg or not msg.components:
+            app.ui_log("   ⚠ Visit: timed out waiting for question")
+            break
+
+        _debug_visit_msg(app, f"round{round_num}_question", msg)
+
+        # ── Click any answer (first button) ──
+        answer_btn = msg.components[0].children[0] if msg.components[0].children else None
+        if not answer_btn:
+            app.ui_log("   ⚠ Visit: no answer buttons found")
+            break
+
+        ans_label = getattr(answer_btn, "label", "?")
+        try:
+            await answer_btn.click()
+            app.ui_log(f"   🏛 Answered: {ans_label!r}")
+        except Exception as e:
+            app.ui_log(f"   ⚠ Visit: answer click failed: {e}")
+            break
+
+        # Poll for result / next round
+        await asyncio.sleep(1.5)
+        try:
+            msg = await channel.fetch_message(msg.id)
+        except Exception as e:
+            app.ui_log(f"   ⚠ Visit: post-answer fetch failed: {e}")
+            break
+
+        _debug_visit_msg(app, f"round{round_num}_after_answer", msg)
+
+        # If no components remain, visit ended
+        if not msg.components:
+            app.ui_log("   ✅ Visit complete — no more buttons")
+            break
+    else:
+        app.ui_log(f"   ⚠ Visit: hit max rounds ({MAX_ROUNDS}) — stopping to be safe")
+
+    app.ui_log("   ✅ Visit done")
 
 
 # ─────────────────────────────────────────────
