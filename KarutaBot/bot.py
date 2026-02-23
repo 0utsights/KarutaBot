@@ -66,12 +66,6 @@ async def fetch_reminders(app, client, channel):
 
     result = {}
     for embed in msg.embeds:
-        # Raw debug dump so we can see exact reminder format
-        app.ui_log(f"[REM] title={embed.title!r}")
-        app.ui_log(f"[REM] desc={str(embed.description or '')[:300]!r}")
-        for fi, f in enumerate(embed.fields):
-            app.ui_log(f"[REM] field[{fi}] name={f.name!r} value={f.value!r}")
-
         text = " ".join([
             str(embed.title or ""),
             str(embed.description or ""),
@@ -380,35 +374,47 @@ async def do_daily(app, client, channel):
         try:
             # Step 1: click the Quiz button (first button)
             quiz_btn = msg.components[0].children[0]
+            app.ui_log(f"   [daily] msg.id={msg.id}  cached={msg.id in {m.id for m in client.cached_messages}}")
             await quiz_btn.click()
-            app.ui_log("   📅 Clicked Quiz button, waiting for edit...")
+            app.ui_log("   📅 Clicked Quiz button, watching for edit...")
 
-            # Step 2: Karuta EDITS the message to show Yes/No buttons — listen for edit
-            # discord.py passes (before, after) as two args to the check function
-            def check_edit(before, after):
-                return (after.id == msg.id and
-                        after.channel.id == channel.id and
-                        bool(after.components))
+            # Step 2: Karuta edits the SAME message to show Yes/No
+            # Attach a raw listener via on_raw_message_edit as fallback since
+            # message_edit only fires if the message is in discord.py's cache
+            edit_future = client.loop.create_future()
 
-            before_msg, after_msg = await client.wait_for("message_edit", check=check_edit, timeout=15)
+            async def _on_raw_edit(payload):
+                if payload.message_id == msg.id and not edit_future.done():
+                    app.ui_log(f"   [daily] raw edit fired — fetching updated message")
+                    try:
+                        updated = await channel.fetch_message(msg.id)
+                        app.ui_log(f"   [daily] updated components: {bool(updated.components)}")
+                        if updated.components:
+                            for ri, row in enumerate(updated.components):
+                                for bi, btn in enumerate(row.children):
+                                    label = getattr(btn, "label", None) or getattr(btn, "emoji", "?")
+                                    app.ui_log(f"   [daily edit] button[{ri}][{bi}] = {label!r}")
+                            edit_future.set_result(updated)
+                        else:
+                            app.ui_log("   [daily] edit had no components yet")
+                    except Exception as e:
+                        app.ui_log(f"   [daily] fetch error: {e}")
 
-            # Log the edited message buttons
-            if after_msg.components:
-                for ri, row in enumerate(after_msg.components):
-                    for bi, btn in enumerate(row.children):
-                        label = getattr(btn, "label", None) or getattr(btn, "emoji", "?")
-                        app.ui_log(f"   [daily edit] button[{ri}][{bi}] = {label!r}")
-                # Click first button — Yes, No, whatever it is
+            client.add_listener(_on_raw_edit, "on_raw_message_edit")
+
+            try:
+                after_msg = await asyncio.wait_for(edit_future, timeout=15)
                 answer_btn = after_msg.components[0].children[0]
                 await answer_btn.click()
                 app.ui_log("   ✅ Daily answered!")
-            else:
-                app.ui_log("   ⚠ Edited message has no buttons")
+            except asyncio.TimeoutError:
+                app.ui_log("   ⚠ Timed out waiting for quiz edit — message may not be cached")
+            finally:
+                client.remove_listener(_on_raw_edit, "on_raw_message_edit")
 
-        except asyncio.TimeoutError:
-            app.ui_log("   ⚠ Timed out waiting for quiz edit")
         except Exception as e:
-            app.ui_log(f"   ⚠ Daily button click failed: {e}")
+            import traceback
+            app.ui_log(f"   ⚠ Daily failed: {traceback.format_exc()}")
 
     except asyncio.TimeoutError:
         app.ui_log("   ⚠ Daily timed out")
