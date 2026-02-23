@@ -92,8 +92,8 @@ async def do_drop(app, client):
         # Try OCR first, fall back to embed parsing if it fails
         cards = None
         if drop_msg.attachments:
-            from ocr import parse_drop_image, check_tesseract
-            ok, msg = check_tesseract()
+            from ocr import parse_drop_image, check_easyocr
+            ok, msg = check_easyocr()
             if ok:
                 # Open live OCR viewer window
                 viewer = None

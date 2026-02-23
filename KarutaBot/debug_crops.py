@@ -50,26 +50,14 @@ def annotate(img):
         draw.line([(i * card_w, 0), (i * card_w, height)], fill=(255, 255, 0, 200), width=2)
     path = os.path.join(OUT_DIR, "annotated.png")
     vis.save(path)
-    print(f"\nSaved annotated image: {path}")
-    print(f"Image: {width}x{height}  Card width: {card_w}px")
-    print(f"NAME   y={int(height*NAME_TOP)} to {int(height*NAME_BOTTOM)}")
-    print(f"SERIES y={int(height*SERIES_TOP)} to {int(height*SERIES_BOTTOM)}")
-    print(f"PRINT  y={int(height*PRINT_TOP)} to {int(height*PRINT_BOTTOM)}")
+    print(f"Saved: {path}  ({width}x{height}  card_w={card_w})")
 
 
 def crop_and_ocr(img):
     sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-    from ocr import _preprocess, _preprocess_print, _clean_name, _clean_print, _setup_tesseract
+    from ocr import _preprocess, _preprocess_print, _clean_name, _clean_print, _get_reader, _ocr_text, _ocr_print
 
-    try:
-        pytesseract = _setup_tesseract()
-        name_cfg   = "--psm 7 -c tessedit_char_whitelist=ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789 !?:-."
-        series_cfg = "--psm 6 -c tessedit_char_whitelist=ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789 !?:-."
-        print_cfg  = "--psm 7 -c tessedit_char_whitelist=0123456789."
-        ocr_ok = True
-    except Exception as e:
-        print(f"\nTesseract not available: {e}")
-        ocr_ok = False
+    reader = _get_reader(log_fn=print)
 
     width, height = img.size
     card_w = width // 3
@@ -92,20 +80,18 @@ def crop_and_ocr(img):
             proc = _preprocess_print(crop) if label == "print" else _preprocess(crop)
             proc.save(os.path.join(OUT_DIR, f"card{card_i+1}_{label}_processed.png"))
 
-            if ocr_ok:
-                cfg = print_cfg if label == "print" else (name_cfg if label == "name" else series_cfg)
-                raw = pytesseract.image_to_string(proc, config=cfg).strip()
-                cleaned = _clean_print(raw) if label == "print" else _clean_name(raw)
-                print(f"   {label:6s}: raw={raw!r:30s}  ->  {cleaned!r}")
+            raw     = _ocr_print(reader, proc) if label == "print" else _ocr_text(reader, proc)
+            cleaned = _clean_print(raw) if label == "print" else _clean_name(raw)
+            print(f"   {label:6s}: raw={raw!r:30s}  ->  {cleaned!r}")
         print()
 
 
 if __name__ == "__main__":
     if len(sys.argv) < 2:
-        print('Usage: C:\\Python313\\python.exe debug_crops.py "<url>"')
+        print("Usage: C:\\Python313\\python.exe debug_crops.py \"<url>\"")
         sys.exit(1)
     img = download(sys.argv[1])
     print(f"Downloaded: {img.size[0]}x{img.size[1]}px")
     annotate(img)
     crop_and_ocr(img)
-    print(f"\nAll debug images saved to ./{OUT_DIR}/")
+    print(f"All debug images saved to ./{OUT_DIR}/")
