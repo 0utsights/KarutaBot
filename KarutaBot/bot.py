@@ -226,11 +226,30 @@ async def lookup_wishes(app, client, channel, card_name):
     try:
         msg = await client.wait_for("message", check=check, timeout=12)
         for embed in msg.embeds:
-            app.ui_log(f"🔍 k!lu response: desc={str(embed.description)[:100]!r}")
-            text  = str(embed.description or "") + " ".join(str(f.value) for f in embed.fields)
-            match = re.search(r'(\d+)\s*wish', text, re.IGNORECASE)
+            # Full debug dump so we can see exact structure
+            app.ui_log(f"[LU] title={embed.title!r}")
+            app.ui_log(f"[LU] desc={str(embed.description or '')[:200]!r}")
+            for fi, f in enumerate(embed.fields):
+                app.ui_log(f"[LU] field[{fi}] name={f.name!r} value={f.value!r}")
+
+            # Build searchable text from every possible location
+            parts = [
+                str(embed.title or ""),
+                str(embed.description or ""),
+            ]
+            for f in embed.fields:
+                parts.append(str(f.name or ""))
+                parts.append(str(f.value or ""))
+            text = " ".join(parts)
+
+            # Try all known formats:
+            # "Wishlisted · 1"  "Wishlisted: 1"  "Wishlisted 1"
+            match = re.search(r'Wishlisted\s*[·:\-]?\s*([\d,]+)', text, re.IGNORECASE)
             if match:
-                return int(match.group(1))
+                count = int(match.group(1).replace(",", ""))
+                app.ui_log(f"   ♥ Wishlisted: {count}")
+                return count
+            app.ui_log("[LU] Could not find Wishlisted count in embed")
     except asyncio.TimeoutError:
         app.ui_log("⚠ k!lu timed out")
     return 0
