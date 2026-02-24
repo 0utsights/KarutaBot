@@ -513,20 +513,17 @@ def _find_emoji_button(components, *emoji_names):
 
 
 def _find_check_button(components):
-    """Return the confirm/check button — no label, not a numbered or speech emoji."""
-    NUMBER_EMOJIS = {"1️⃣", "2️⃣", "3️⃣", "4️⃣", "5️⃣", "💬", "🗨"}
+    """Return the confirm button — matches on 'buttonconfirm' in the custom emoji name/id.
+    Karuta uses <:buttonconfirm:859308342479683584> as the confirm and
+    <:buttoncancel:859308355847454720> as cancel — must target confirm specifically.
+    """
     for row in components:
         for btn in row.children:
-            lbl   = (getattr(btn, "label", "") or "").strip()
             emoji = getattr(btn, "emoji", None)
-            if lbl:
-                continue
             if emoji is None:
                 continue
-            emoji_str = str(emoji)
-            if any(ne in emoji_str for ne in NUMBER_EMOJIS):
-                continue
-            return btn  # whatever's left should be the checkmark
+            if "buttonconfirm" in str(emoji):
+                return btn
     return None
 
 
@@ -641,16 +638,42 @@ async def _fetch_affectionlist(app, client, channel):
     return all_cards
 
 
-def _pick_visit_card(cards):
-    """From parsed affectionlist, pick the best card to visit.
-    Priority: highest energy first, then highest score (AR*2 + AP) as tiebreaker.
-    Returns the card dict or None.
-    """
+def _rank_visit_cards(cards):
+    """Return cards sorted by priority: highest energy first, then highest score (AR*2 + AP)."""
     if not cards:
-        return None
+        return []
     max_energy = max(c["energy"] for c in cards)
+    # Only consider cards with max energy — no point visiting a half-empty card
     candidates = [c for c in cards if c["energy"] == max_energy]
-    return max(candidates, key=lambda c: c["score"])
+    return sorted(candidates, key=lambda c: c["score"], reverse=True)
+
+
+async def _check_card_owned(app, client, channel, code):
+    """Send k!c code=<id> and return True if the card exists in the collection, False if empty."""
+    await channel.send(f"k!c code={code}")
+
+    def check(m):
+        return m.channel.id == channel.id and m.author.id == KARUTA_ID
+
+    try:
+        msg = await client.wait_for("message", check=check, timeout=12)
+    except asyncio.TimeoutError:
+        app.ui_log(f"   ⚠ k!c code={code} timed out — skipping")
+        return False
+
+    # Check all text surfaces for the empty marker
+    full_text = msg.content
+    for emb in msg.embeds:
+        full_text += str(emb.title or "") + str(emb.description or "")
+        for f in emb.fields:
+            full_text += str(f.value or "")
+
+    if "The list is empty" in full_text:
+        app.ui_log(f"   ⚠ {code} not in collection — skipping")
+        return False
+
+    app.ui_log(f"   ✅ {code} confirmed in collection")
+    return True
 
 
 # ─────────────────────────────────────────────
@@ -671,10 +694,23 @@ async def do_visit(app, client, channel):
         await asyncio.sleep(1)
 
         if cards:
-            best = _pick_visit_card(cards)
-            card_code = best["code"]
-            app.ui_log(f"🏛 Selected: {best['name']} ({card_code}) — "
-                       f"energy={best['energy']} score={best['score']}")
+            ranked = _rank_visit_cards(cards)
+            card_code = ""
+            for i, candidate in enumerate(ranked):
+                app.ui_log(f"   🔍 Checking ownership: {candidate['name']} ({candidate['code']})")
+                if i > 0:
+                    app.ui_log("   ⏳ k!c cooldown — waiting 10s...")
+                    await asyncio.sleep(10)
+                else:
+                    await asyncio.sleep(1)
+                owned = await _check_card_owned(app, client, channel, candidate["code"])
+                if owned:
+                    card_code = candidate["code"]
+                    app.ui_log(f"🏛 Selected: {candidate['name']} ({card_code}) — "
+                               f"energy={candidate['energy']} score={candidate['score']}")
+                    break
+            if not card_code:
+                app.ui_log("🏛 No owned cards found in affectionlist — running k!visit with no code")
         else:
             card_code = ""
             app.ui_log("🏛 No cards parsed from affectionlist — running k!visit with no code")
