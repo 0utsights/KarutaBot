@@ -145,7 +145,7 @@ async def automation_loop(app, client, channel_id):
     while app.running:
         app.reset_daily_if_needed()
 
-        # Check reminders once per cycle to update UI badges and run ready commands
+        # Fetch reminders at the top of every cycle
         reminders = await fetch_reminders(app, client, channel)
         await asyncio.sleep(2)
 
@@ -154,39 +154,61 @@ async def automation_loop(app, client, channel_id):
             await do_daily(app, client, channel)
             await asyncio.sleep(2)
 
+        # ── Drop ──
+        drop_cooldown = reminders.get("Drop")  # seconds remaining, 0 = ready, None = unknown
+
+        if app.drops_today >= app.max_drops_var.get():
+            app.ui_log(f"⚠ Daily drop limit reached ({app.max_drops_var.get()}). Waiting 10m...")
+            await asyncio.sleep(600)
+            continue
+
+        if drop_cooldown and drop_cooldown > 0:
+            # Drop not ready — sleep the cooldown then loop back to re-check everything
+            jitter_min = getattr(app, "jitter_min_var", None)
+            jitter_max = getattr(app, "jitter_max_var", None)
+            j_min  = (jitter_min.get() if jitter_min else DROP_JITTER_MIN) * 60
+            j_max  = (jitter_max.get() if jitter_max else DROP_JITTER_MAX) * 60
+            if j_max < j_min:
+                j_min, j_max = j_max, j_min
+            jitter = random.uniform(j_min, j_max)
+            delay  = drop_cooldown + jitter
+
+            app.next_drop_time = datetime.now() + timedelta(seconds=delay)
+            rem_mins = int(drop_cooldown // 60)
+            tot_mins = int(delay // 60)
+            tot_secs = int(delay % 60)
+            app.ui_log(f"⏱ Drop on cooldown — next in {tot_mins}m {tot_secs}s "
+                       f"(cooldown {rem_mins}m + {int(jitter//60)}m jitter)")
+            await asyncio.sleep(delay)
+            continue
+
+        # Drop is ready — run it
+        await do_drop(app, client, channel)
+
         # ── Visit ──
         if reminders.get("Visit") == 0:
             await do_visit(app, client, channel)
             await asyncio.sleep(2)
 
-        # ── Drop ──
-        if app.drops_today >= app.max_drops_var.get():
-            app.ui_log(f"⚠ Daily drop limit reached ({app.max_drops_var.get()}). Waiting...")
-            await asyncio.sleep(600)
-            continue
-
-        await do_drop(app, client, channel)
-
-        # Re-fetch reminders after all commands so badges reflect current state
+        # Re-fetch reminders after all commands so badges and sleep duration are accurate
         await asyncio.sleep(2)
         reminders = await fetch_reminders(app, client, channel)
 
-        # Base cooldown from k!reminders Drop value (seconds), fall back to flat 30 min
-        # Add random jitter between user-configured min and max
+        # Sleep until next drop (+ jitter)
         base_secs = reminders.get("Drop") or (DROP_COOLDOWN_MIN * 60)
         jitter_min = getattr(app, "jitter_min_var", None)
         jitter_max = getattr(app, "jitter_max_var", None)
-        j_min = (jitter_min.get() if jitter_min else DROP_JITTER_MIN) * 60
-        j_max = (jitter_max.get() if jitter_max else DROP_JITTER_MAX) * 60
+        j_min  = (jitter_min.get() if jitter_min else DROP_JITTER_MIN) * 60
+        j_max  = (jitter_max.get() if jitter_max else DROP_JITTER_MAX) * 60
         if j_max < j_min:
-            j_min, j_max = j_max, j_min  # swap if misconfigured
+            j_min, j_max = j_max, j_min
         jitter = random.uniform(j_min, j_max)
         delay  = base_secs + jitter
 
         app.next_drop_time = datetime.now() + timedelta(seconds=delay)
-        rem_mins  = int(base_secs // 60)
-        tot_mins  = int(delay // 60)
-        tot_secs  = int(delay % 60)
+        rem_mins = int(base_secs // 60)
+        tot_mins = int(delay // 60)
+        tot_secs = int(delay % 60)
         app.ui_log(f"⏱ Next drop in {tot_mins}m {tot_secs}s "
                    f"(cooldown {rem_mins}m + {int(jitter//60)}m jitter)")
         await asyncio.sleep(delay)
