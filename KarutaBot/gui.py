@@ -392,8 +392,25 @@ class AccountPanel:
     def start_bot(self):
         token      = self.token_var.get().strip()
         channel_id = self.channel_var.get().strip()
+
         if not token or not channel_id:
             self.log("⚠ Please enter Token and Channel ID.")
+            return
+
+        # Token sanity check — Discord tokens have two dots and are reasonably long
+        if token.count(".") < 2 or len(token) < 50:
+            self.log("⚠ Token looks invalid. Make sure you copied the full token, not a partial or URL.")
+            return
+
+        # Channel ID must be a plain integer — catch the case where user pastes a URL
+        # or a server_id/channel_id path like '123456789/987654321'
+        if "/" in channel_id or not channel_id.isdigit():
+            self.log("⚠ Channel ID looks invalid. It should be a plain number like 1234567890123456789.")
+            self.log("   Tip: right-click the channel in Discord → Copy Channel ID (enable Developer Mode first).")
+            return
+
+        if len(channel_id) < 17:
+            self.log("⚠ Channel ID is too short — Discord IDs are 17-19 digits.")
             return
         self.running = True
         self.start_btn.config(state="disabled")
