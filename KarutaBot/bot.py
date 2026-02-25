@@ -768,7 +768,8 @@ async def _check_card_owned(app, client, channel, code):
 # ─────────────────────────────────────────────
 async def do_visit(app, client, channel):
     # ── Determine which card to visit ──
-    manual_code = app.data.get("visit_card_code", "").strip()
+    _visit_card_var = getattr(app, "visit_card_var", None)
+    manual_code     = _visit_card_var.get().strip() if _visit_card_var else ""
 
     if manual_code:
         # Manual override set — skip affectionlist entirely
@@ -776,7 +777,8 @@ async def do_visit(app, client, channel):
         app.ui_log(f"🏛 Visiting (manual code: {card_code})")
     else:
         # Auto-select via k!affectionlist (+ optional tag prioritisation)
-        visit_tag = app.data.get("visit_tag", "").strip()
+        _visit_tag_var = getattr(app, "visit_tag_var", None)
+        visit_tag      = _visit_tag_var.get().strip() if _visit_tag_var else ""
 
         # Fetch tag codes first if a tag is configured
         tag_codes = set()
