@@ -638,14 +638,101 @@ async def _fetch_affectionlist(app, client, channel):
     return all_cards
 
 
-def _rank_visit_cards(cards):
-    """Return cards sorted by priority: highest energy first, then highest score (AR*2 + AP)."""
-    if not cards:
-        return []
-    max_energy = max(c["energy"] for c in cards)
-    # Only consider cards with max energy — no point visiting a half-empty card
-    candidates = [c for c in cards if c["energy"] == max_energy]
-    return sorted(candidates, key=lambda c: c["score"], reverse=True)
+async def _fetch_tag_codes(app, client, channel, tag):
+    """Send k!c tag=<tag>, paginate, return set of card codes found in the collection."""
+    codes = set()
+    await channel.send(f"k!c tag={tag}")
+
+    def check(m):
+        return m.channel.id == channel.id and m.author.id == KARUTA_ID
+
+    page = 1
+    while True:
+        try:
+            msg = await client.wait_for("message", check=check, timeout=12)
+        except asyncio.TimeoutError:
+            app.ui_log(f"   ⚠ k!c tag={tag} timed out (page {page})")
+            break
+
+        full_text = msg.content
+        for emb in msg.embeds:
+            full_text += str(emb.title or "") + str(emb.description or "")
+            for f in emb.fields:
+                full_text += str(f.value or "")
+
+        if "The list is empty" in full_text:
+            app.ui_log(f"   ⚠ Tag '{tag}' is empty or doesn't exist")
+            break
+
+        # Card codes appear as **`code`** in collection embeds
+        found = re.findall(r'\*\*`([a-z0-9]{4,8})`\*\*', full_text)
+        # Also catch bare backtick codes that may appear in description
+        found += [c for c in re.findall(r'`([a-z0-9]{4,8})`', full_text)
+                  if re.fullmatch(r'[a-z0-9]+', c) and not c.isdigit()]
+        codes.update(found)
+        app.ui_log(f"   📋 Tag page {page}: {len(found)} codes found ({len(codes)} total)")
+
+        # Paginate via Next button
+        next_btn = _find_button(msg.components, "next") if msg.components else None
+        if next_btn and not getattr(next_btn, "disabled", False):
+            try:
+                await next_btn.click()
+                page += 1
+                await asyncio.sleep(1)
+            except Exception as e:
+                app.ui_log(f"   ⚠ Tag next page failed: {e}")
+                break
+        else:
+            break
+
+    app.ui_log(f"   🏷 Tag '{tag}' codes: {codes or 'none'}")
+    return codes
+
+
+def _rank_visit_cards(cards, tag_codes=None):
+    """Return visit candidates sorted by priority.
+
+    Energy ≥5 is required for affectionlist cards.
+    If tag_codes provided:
+      1. Tag cards not on affectionlist (unknown energy — visit to register them)
+      2. Tag cards on affectionlist with energy ≥5, sorted by score desc
+      3. Non-tag affectionlist cards with energy ≥5, sorted by score desc
+    If no tag_codes:
+      All affectionlist cards with energy ≥5, sorted by score desc.
+
+    Each item in the returned list is either a card dict (from affectionlist)
+    or a minimal dict {code, name, energy: None, _unregistered: True} for tag-only cards.
+    """
+    MIN_ENERGY = 5
+
+    al_by_code = {c["code"]: c for c in cards}
+
+    if tag_codes:
+        # Phase 1: tag codes not on affectionlist at all
+        unregistered = [
+            {"code": code, "name": code, "energy": None, "score": 0, "_unregistered": True}
+            for code in tag_codes
+            if code not in al_by_code
+        ]
+
+        # Phase 2: tag codes on affectionlist with energy ≥5
+        tag_eligible = sorted(
+            [al_by_code[code] for code in tag_codes
+             if code in al_by_code and al_by_code[code]["energy"] >= MIN_ENERGY],
+            key=lambda c: c["score"], reverse=True
+        )
+
+        # Phase 3: non-tag affectionlist cards with energy ≥5
+        other_eligible = sorted(
+            [c for c in cards if c["code"] not in tag_codes and c["energy"] >= MIN_ENERGY],
+            key=lambda c: c["score"], reverse=True
+        )
+
+        return unregistered + tag_eligible + other_eligible
+    else:
+        # No tag — all affectionlist cards with energy ≥5, best score first
+        eligible = [c for c in cards if c["energy"] >= MIN_ENERGY]
+        return sorted(eligible, key=lambda c: c["score"], reverse=True)
 
 
 async def _check_card_owned(app, client, channel, code):
@@ -688,16 +775,31 @@ async def do_visit(app, client, channel):
         card_code = manual_code
         app.ui_log(f"🏛 Visiting (manual code: {card_code})")
     else:
-        # Auto-select via k!affectionlist
-        app.ui_log("🏛 Fetching k!affectionlist to pick best card...")
-        cards = await _fetch_affectionlist(app, client, channel)
+        # Auto-select via k!affectionlist (+ optional tag prioritisation)
+        visit_tag = app.data.get("visit_tag", "").strip()
+
+        # Fetch tag codes first if a tag is configured
+        tag_codes = set()
+        if visit_tag:
+            app.ui_log(f"🏛 Fetching tag '{visit_tag}' card codes...")
+            tag_codes = await _fetch_tag_codes(app, client, channel, visit_tag)
+            await asyncio.sleep(2)
+
+        app.ui_log("🏛 Fetching k!affectionlist...")
+        al_cards = await _fetch_affectionlist(app, client, channel)
         await asyncio.sleep(1)
 
-        if cards:
-            ranked = _rank_visit_cards(cards)
+        ranked = _rank_visit_cards(al_cards, tag_codes if visit_tag else None)
+
+        if not ranked:
+            card_code = ""
+            app.ui_log("🏛 No eligible cards found — running k!visit with no code")
+        else:
             card_code = ""
             for i, candidate in enumerate(ranked):
-                app.ui_log(f"   🔍 Checking ownership: {candidate['name']} ({candidate['code']})")
+                is_unreg = candidate.get("_unregistered", False)
+                energy_str = "unregistered" if is_unreg else f"energy={candidate['energy']}"
+                app.ui_log(f"   🔍 Checking ownership: {candidate['name']} ({candidate['code']}) [{energy_str}]")
                 if i > 0:
                     app.ui_log("   ⏳ k!c cooldown — waiting 10s...")
                     await asyncio.sleep(10)
@@ -706,14 +808,11 @@ async def do_visit(app, client, channel):
                 owned = await _check_card_owned(app, client, channel, candidate["code"])
                 if owned:
                     card_code = candidate["code"]
-                    app.ui_log(f"🏛 Selected: {candidate['name']} ({card_code}) — "
-                               f"energy={candidate['energy']} score={candidate['score']}")
+                    score_str = f"score={candidate['score']}" if not is_unreg else "new to affectionlist"
+                    app.ui_log(f"🏛 Selected: {candidate['name']} ({card_code}) — {energy_str} {score_str}")
                     break
             if not card_code:
-                app.ui_log("🏛 No owned cards found in affectionlist — running k!visit with no code")
-        else:
-            card_code = ""
-            app.ui_log("🏛 No cards parsed from affectionlist — running k!visit with no code")
+                app.ui_log("🏛 No owned eligible cards found — running k!visit with no code")
     cmd       = f"k!visit {card_code}" if card_code else "k!visit"
     app.ui_log(f"🏛 Visiting shrine... ({cmd})")
     await channel.send(cmd)
