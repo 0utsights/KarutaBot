@@ -602,7 +602,21 @@ async def do_work(app, client, channel):
                 app.ui_log(f"   ⚠ k!jobworker {slot} timed out — continuing")
             await asyncio.sleep(2)
 
-    # ── Step 4: run k!work ──
+    # ── Step 4: k!nodes — debug response ──
+    await asyncio.sleep(1)
+    await channel.send("k!nodes")
+    try:
+        nodes_msg = await client.wait_for("message", check=check, timeout=12)
+        app.ui_log(f"   [nodes] content: {nodes_msg.content[:200]!r}")
+        for ei, emb in enumerate(nodes_msg.embeds):
+            app.ui_log(f"   [nodes] embed[{ei}] title={emb.title!r}")
+            app.ui_log(f"   [nodes] embed[{ei}] desc={str(emb.description)[:600]!r}")
+            for fi, field in enumerate(emb.fields):
+                app.ui_log(f"   [nodes] embed[{ei}].field[{fi}] name={field.name!r} val={field.value!r}")
+    except asyncio.TimeoutError:
+        app.ui_log("   ⚠ k!nodes timed out")
+
+    # ── Step 5: run k!work ──
     await asyncio.sleep(1)
     await channel.send("k!work")
     try:
