@@ -155,41 +155,20 @@ async def automation_loop(app, client, channel_id):
             await do_daily(app, client, channel)
             await asyncio.sleep(2)
 
-        # ── Work ──
-        if reminders.get("Work") == 0:
-            await do_work(app, client, channel)
-            await asyncio.sleep(2)
-
         # ── Drop ──
         drop_cooldown = reminders.get("Drop")  # seconds remaining, 0 = ready, None = unknown
 
         if app.drops_today >= app.max_drops_var.get():
-            app.ui_log(f"⚠ Daily drop limit reached ({app.max_drops_var.get()}). Waiting 10m...")
-            await asyncio.sleep(600)
-            continue
+            app.ui_log(f"⚠ Daily drop limit reached ({app.max_drops_var.get()}). Skipping drop.")
+        elif drop_cooldown and drop_cooldown > 0:
+            app.ui_log(f"⏱ Drop on cooldown ({int(drop_cooldown // 60)}m) — skipping drop this cycle")
+        else:
+            await do_drop(app, client, channel)
 
-        if drop_cooldown and drop_cooldown > 0:
-            # Drop not ready — sleep the cooldown then loop back to re-check everything
-            jitter_min = getattr(app, "jitter_min_var", None)
-            jitter_max = getattr(app, "jitter_max_var", None)
-            j_min  = (jitter_min.get() if jitter_min else DROP_JITTER_MIN) * 60
-            j_max  = (jitter_max.get() if jitter_max else DROP_JITTER_MAX) * 60
-            if j_max < j_min:
-                j_min, j_max = j_max, j_min
-            jitter = random.uniform(j_min, j_max)
-            delay  = drop_cooldown + jitter
-
-            app.next_drop_time = datetime.now() + timedelta(seconds=delay)
-            rem_mins = int(drop_cooldown // 60)
-            tot_mins = int(delay // 60)
-            tot_secs = int(delay % 60)
-            app.ui_log(f"⏱ Drop on cooldown — next in {tot_mins}m {tot_secs}s "
-                       f"(cooldown {rem_mins}m + {int(jitter//60)}m jitter)")
-            await asyncio.sleep(delay)
-            continue
-
-        # Drop is ready — run it
-        await do_drop(app, client, channel)
+        # ── Work ──
+        if reminders.get("Work") == 0:
+            await do_work(app, client, channel)
+            await asyncio.sleep(2)
 
         # ── Visit ──
         if reminders.get("Visit") == 0:
@@ -602,19 +581,36 @@ async def do_work(app, client, channel):
                 app.ui_log(f"   ⚠ k!jobworker {slot} timed out — continuing")
             await asyncio.sleep(2)
 
-    # ── Step 4: k!nodes — debug response ──
+    # ── Step 4: k!nodes — find slot-2 node and assign all workers to it ──
     await asyncio.sleep(1)
     await channel.send("k!nodes")
     try:
         nodes_msg = await client.wait_for("message", check=check, timeout=12)
-        app.ui_log(f"   [nodes] content: {nodes_msg.content[:200]!r}")
-        for ei, emb in enumerate(nodes_msg.embeds):
-            app.ui_log(f"   [nodes] embed[{ei}] title={emb.title!r}")
-            app.ui_log(f"   [nodes] embed[{ei}] desc={str(emb.description)[:600]!r}")
-            for fi, field in enumerate(emb.fields):
-                app.ui_log(f"   [nodes] embed[{ei}].field[{fi}] name={field.name!r} val={field.value!r}")
+        nodes_desc = "".join(str(emb.description or "") for emb in nodes_msg.embeds)
+
+        # Find line starting with "2." and extract the backtick node name
+        node_name = None
+        for line in nodes_desc.splitlines():
+            if line.strip().startswith("2."):
+                m = re.search(r'`([a-z]+)`', line)
+                if m:
+                    node_name = m.group(1)
+                break
+
+        if node_name:
+            cmd = f"k!jobnode a b c d e {node_name}"
+            app.ui_log(f"   🌐 Assigning all workers to node '{node_name}' ({cmd})")
+            await channel.send(cmd)
+            try:
+                await client.wait_for("message", check=check, timeout=10)
+                app.ui_log(f"   ✅ Workers assigned to '{node_name}'")
+            except asyncio.TimeoutError:
+                app.ui_log("   ⚠ k!jobnode timed out")
+        else:
+            app.ui_log("   ⚠ Could not find slot-2 node in k!nodes — skipping node assignment")
     except asyncio.TimeoutError:
-        app.ui_log("   ⚠ k!nodes timed out")
+        app.ui_log("   ⚠ k!nodes timed out — skipping node assignment")
+    await asyncio.sleep(1)
 
     # ── Step 5: run k!work ──
     await asyncio.sleep(1)
@@ -631,12 +627,20 @@ async def do_work(app, client, channel):
                 await asyncio.sleep(2)
                 await channel.send("k!work")
                 try:
-                    await client.wait_for("message", check=check, timeout=12)
-                    app.ui_log("   ✅ Work started")
+                    retry_msg = await client.wait_for("message", check=check, timeout=12)
+                    await asyncio.sleep(1)
+                    if await _click_checkmark(app, retry_msg):
+                        app.ui_log("   ✅ Work confirmed ✅")
+                    else:
+                        app.ui_log("   ✅ Work started")
                 except asyncio.TimeoutError:
                     app.ui_log("   ⚠ k!work retry timed out")
         else:
-            app.ui_log("   ✅ Work started")
+            await asyncio.sleep(1)
+            if await _click_checkmark(app, work_msg):
+                app.ui_log("   ✅ Work confirmed ✅")
+            else:
+                app.ui_log("   ✅ Work started")
     except asyncio.TimeoutError:
         app.ui_log("   ⚠ k!work timed out")
 
