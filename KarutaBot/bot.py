@@ -421,124 +421,188 @@ async def maybe_tag_burn(app, client, channel, card):
         app.ui_log("   ⚠ Tag response timed out")
 
 
+
 # ─────────────────────────────────────────────
 #  Work
 # ─────────────────────────────────────────────
 _SLOT_EMOJIS = {"🇦": "A", "🇧": "B", "🇨": "C", "🇩": "D", "🇪": "E"}
 
 
-def _parse_jb(desc):
-    """Parse k!jb embed description.
-    Returns dict: {'A': 'Hisoka', 'B': 'Subaru Natsuki', ...}
-    """
-    slots = {}
-    for line in desc.splitlines():
-        for emoji, letter in _SLOT_EMOJIS.items():
-            if line.startswith(emoji):
-                # 🇦 Subaru Natsuki · **285** Effort · `Healthy`
-                rest = line[len(emoji):].strip()
-                name = rest.split("·")[0].strip()
-                slots[letter] = name
-                break
-    return slots
-
-
 def _parse_c_sort_effort(desc, limit=5):
     """Parse k!c sort=effort embed description.
-    Returns list of {name, code} dicts, top `limit` by effort order.
+    Each line: ◾ `✧394` · **`hnf6p7`** · `★★★★` · ... · Series · **Character Name**
+    Name is the last · segment with ** stripped.
+    Returns [{name, code}, ...] ordered by effort (top `limit`).
     """
     cards = []
     for line in desc.splitlines():
-        # Code: **`hnf6p7`**   Name: **Hisoka** (last bold token on the line)
         code_m = re.search(r'\*\*`([a-z0-9]{4,8})`\*\*', line)
-        name_m = re.findall(r'\*\*([^`][^*]+)\*\*', line)
-        if not code_m or not name_m:
+        if not code_m:
             continue
         code = code_m.group(1)
-        name = name_m[-1].strip()  # last bold segment is the character name
-        cards.append({"name": name, "code": code})
+        # Split on · separator, strip ** and whitespace, drop backtick-only segments
+        parts = [p.strip().strip('*').strip() for p in line.split('·')]
+        parts = [p for p in parts if p and not p.startswith('`')]
+        if not parts:
+            continue
+        name = parts[-1]  # character name is always the last segment
+        if name:
+            cards.append({"name": name, "code": code})
         if len(cards) >= limit:
             break
     return cards
 
 
+def _parse_jb(desc):
+    """Parse k!jb embed description.
+    Each line: 🇦 Character Name · **285** Effort · `Healthy`
+    Returns {'A': 'Character Name', 'B': ..., ...}
+    """
+    slots = {}
+    for line in desc.splitlines():
+        for emoji, letter in _SLOT_EMOJIS.items():
+            if line.startswith(emoji):
+                rest = line[len(emoji):].strip()
+                name = rest.split('·')[0].strip()
+                if name:
+                    slots[letter] = name
+                break
+    return slots
+
+
+async def _click_checkmark(app, msg):
+    """Find and click a ✅ / white_check_mark button on a message. Returns True if clicked."""
+    for row in getattr(msg, "components", []):
+        for btn in row.children:
+            emoji_str = str(getattr(btn, "emoji", "") or "")
+            if "white_check_mark" in emoji_str or "✅" in emoji_str:
+                try:
+                    await btn.click()
+                    return True
+                except Exception as e:
+                    app.ui_log(f"   ⚠ Confirm click failed: {e}")
+                    return False
+    app.ui_log("   ⚠ No ✅ button found on message")
+    return False
+
+
+async def _acquire_work_permit(app, client, channel):
+    """Check inventory for work permit; use it if found, otherwise buy one.
+    Clicks ✅ on both k!use and k!buy confirmation embeds.
+    Returns True if permit acquired.
+    """
+    def check(m):
+        return m.channel.id == channel.id and m.author.id == KARUTA_ID
+
+    # ── Check inventory first ──
+    app.ui_log("   💳 Checking inventory for work permit (k!i name=work)...")
+    await channel.send("k!i name=work")
+    try:
+        inv_msg = await client.wait_for("message", check=check, timeout=12)
+        inv_text = inv_msg.content
+        for emb in inv_msg.embeds:
+            inv_text += str(emb.description or "") + str(emb.title or "")
+
+        if "work permit" in inv_text.lower():
+            app.ui_log("   💳 Work permit found in inventory — using it...")
+            await asyncio.sleep(1)
+            await channel.send("k!use work permit")
+            try:
+                use_msg = await client.wait_for("message", check=check, timeout=10)
+                await asyncio.sleep(1)
+                if await _click_checkmark(app, use_msg):
+                    app.ui_log("   💳 Confirmed permit use ✅")
+                await asyncio.sleep(2)
+                return True
+            except asyncio.TimeoutError:
+                app.ui_log("   ⚠ k!use work permit timed out")
+                return False
+        else:
+            app.ui_log("   💳 No permit in inventory — buying one...")
+    except asyncio.TimeoutError:
+        app.ui_log("   ⚠ k!i name=work timed out — attempting to buy anyway...")
+
+    # ── Buy permit ──
+    await asyncio.sleep(1)
+    await channel.send("k!buy work permit")
+    try:
+        buy_msg = await client.wait_for("message", check=check, timeout=10)
+        if await _click_checkmark(app, buy_msg):
+            app.ui_log("   💳 Confirmed permit purchase ✅")
+            await asyncio.sleep(2)
+            return True
+        return False
+    except asyncio.TimeoutError:
+        app.ui_log("   ⚠ k!buy work permit timed out")
+        return False
+
+
 async def do_work(app, client, channel):
-    app.ui_log("💼 Work: checking job board...")
+    app.ui_log("💼 Work: optimising job board...")
 
     def check(m):
         return m.channel.id == channel.id and m.author.id == KARUTA_ID
 
-    # ── Fetch k!jb ──
-    await channel.send("k!jb")
-    try:
-        jb_msg = await client.wait_for("message", check=check, timeout=12)
-    except asyncio.TimeoutError:
-        app.ui_log("   ⚠ k!jb timed out")
-        return
-
-    jb_desc = ""
-    for emb in jb_msg.embeds:
-        jb_desc += str(emb.description or "")
-
-    slots = _parse_jb(jb_desc)
-    if not slots:
-        app.ui_log("   ⚠ Could not parse k!jb — no slots found")
-        return
-
-    missing = [s for s in "ABCDE" if s not in slots]
-    if missing:
-        app.ui_log(f"   ⚠ Missing slots in k!jb: {missing}")
-
-    app.ui_log(f"   📋 Current workers: " +
-               ", ".join(f"{s}={slots.get(s, '?')}" for s in "ABCDE"))
-
-    await asyncio.sleep(2)
-
-    # ── Fetch k!c sort=effort ──
+    # ── Step 1: fetch top 5 by effort ──
     await channel.send("k!c sort=effort")
     try:
         c_msg = await client.wait_for("message", check=check, timeout=12)
     except asyncio.TimeoutError:
-        app.ui_log("   ⚠ k!c sort=effort timed out")
+        app.ui_log("   ⚠ k!c sort=effort timed out — aborting")
         return
 
-    c_desc = ""
-    for emb in c_msg.embeds:
-        c_desc += str(emb.description or "")
-
+    c_desc = "".join(str(emb.description or "") for emb in c_msg.embeds)
     top5 = _parse_c_sort_effort(c_desc, limit=5)
-    if len(top5) < 5:
-        app.ui_log(f"   ⚠ Only found {len(top5)} cards in k!c sort=effort, need 5")
-        if not top5:
-            return
+
+    if not top5:
+        app.ui_log("   ⚠ Could not parse k!c sort=effort — aborting")
+        return
 
     top5_names = {c["name"] for c in top5}
-    app.ui_log(f"   🏆 Top 5 by effort: " + ", ".join(c["name"] for c in top5))
+    app.ui_log("   🏆 Top 5: " + ", ".join(f"{c['name']} ({c['code']})" for c in top5))
 
-    # ── Explicitly determine what needs to change ──
-    # Top-5 names already sitting in a slot — leave them alone
-    already_placed = {name for name in slots.values() if name in top5_names}
-    # Slots whose current worker is NOT in top 5 — these need replacing
-    bad_slots = [(slot, name) for slot, name in slots.items() if name not in top5_names]
-    # Top-5 cards not yet in any slot — these get slotted in
-    to_add = [c for c in top5 if c["name"] not in already_placed]
+    await asyncio.sleep(2)
+
+    # ── Step 2: fetch current job board ──
+    await channel.send("k!jb")
+    try:
+        jb_msg = await client.wait_for("message", check=check, timeout=12)
+    except asyncio.TimeoutError:
+        app.ui_log("   ⚠ k!jb timed out — aborting")
+        return
+
+    jb_desc = "".join(str(emb.description or "") for emb in jb_msg.embeds)
+    slots = _parse_jb(jb_desc)
+
+    if not slots:
+        app.ui_log("   ⚠ Could not parse k!jb — aborting")
+        return
+
+    app.ui_log("   📋 Board: " + ", ".join(f"{s}=[{slots.get(s, '?')}]" for s in "ABCDE"))
+
+    # ── Step 3: compare — never touch slots already holding a top-5 worker ──
+    safe_names = {name for name in slots.values() if name in top5_names}
+    bad_slots  = [(slot, name) for slot, name in slots.items() if name not in top5_names]
+    available  = [c for c in top5 if c["name"] not in safe_names]
+
+    for slot, name in slots.items():
+        status = "✅ top5 — keeping" if name in top5_names else "❌ not top5 — replacing"
+        app.ui_log(f"   🔍 Slot {slot}: [{name}] {status}")
 
     if not bad_slots:
-        app.ui_log("   ✅ All workers already in top 5 — running k!work")
+        app.ui_log("   ✅ All slots already have top-5 workers")
     else:
-        app.ui_log(f"   🔄 {len(bad_slots)} slot(s) to replace: " +
-                   ", ".join(f"{s}({n})" for s, n in bad_slots))
-        for (slot, old_name), new_card in zip(bad_slots, to_add):
-            app.ui_log(f"   🔄 Slot {slot}: {old_name} → {new_card['name']} "
-                       f"(k!jobworker {slot} {new_card['code']})")
-            await channel.send(f"k!jobworker {slot} {new_card['code']}")
+        for (slot, old_name), new_card in zip(bad_slots, available):
+            cmd = f"k!jobworker {slot} {new_card['code']}"
+            app.ui_log(f"   🔄 {slot}: [{old_name}] → [{new_card['name']}]  ({cmd})")
+            await channel.send(cmd)
             try:
                 await client.wait_for("message", check=check, timeout=10)
             except asyncio.TimeoutError:
-                app.ui_log(f"   ⚠ k!jobworker {slot} timed out")
+                app.ui_log(f"   ⚠ k!jobworker {slot} timed out — continuing")
             await asyncio.sleep(2)
 
-    # ── Run k!work ──
+    # ── Step 4: run k!work ──
     await asyncio.sleep(1)
     await channel.send("k!work")
     try:
@@ -548,39 +612,15 @@ async def do_work(app, client, channel):
             full_text += str(emb.description or "") + str(emb.title or "")
 
         if "do not have a permit" in full_text.lower():
-            app.ui_log("   💳 No work permit — buying one...")
-            await channel.send("k!buy work permit")
-            try:
-                buy_msg = await client.wait_for("message", check=check, timeout=10)
-                # Click the ✅ confirm button on the purchase embed
-                confirm_btn = None
-                for row in getattr(buy_msg, "components", []):
-                    for btn in row.children:
-                        emoji_str = str(getattr(btn, "emoji", "") or "")
-                        if "white_check_mark" in emoji_str or "✅" in emoji_str:
-                            confirm_btn = btn
-                            break
-                    if confirm_btn:
-                        break
-                if confirm_btn:
-                    try:
-                        await confirm_btn.click()
-                        app.ui_log("   💳 Confirmed permit purchase")
-                        await asyncio.sleep(2)
-                    except Exception as e:
-                        app.ui_log(f"   ⚠ Permit confirm click failed: {e}")
-                else:
-                    app.ui_log("   ⚠ Could not find confirm button on permit purchase")
-            except asyncio.TimeoutError:
-                app.ui_log("   ⚠ k!buy work permit timed out")
-            await asyncio.sleep(2)
-            # Retry k!work after buying permit
-            await channel.send("k!work")
-            try:
-                await client.wait_for("message", check=check, timeout=12)
-                app.ui_log("   ✅ Work started")
-            except asyncio.TimeoutError:
-                app.ui_log("   ⚠ k!work retry timed out")
+            acquired = await _acquire_work_permit(app, client, channel)
+            if acquired:
+                await asyncio.sleep(2)
+                await channel.send("k!work")
+                try:
+                    await client.wait_for("message", check=check, timeout=12)
+                    app.ui_log("   ✅ Work started")
+                except asyncio.TimeoutError:
+                    app.ui_log("   ⚠ k!work retry timed out")
         else:
             app.ui_log("   ✅ Work started")
     except asyncio.TimeoutError:
