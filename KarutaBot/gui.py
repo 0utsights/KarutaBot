@@ -58,7 +58,51 @@ def _glass_frame(parent, **kw):
     outer = tk.Frame(parent, bg=C["border"], bd=0)
     inner = tk.Frame(outer, bg=C["card2"], bd=0, padx=16, pady=12)
     inner.pack(fill="both", expand=True, padx=1, pady=1)
-    return outer, inner
+
+
+class _Tooltip:
+    """Hover tooltip attached to a widget."""
+    def __init__(self, widget, text):
+        self.widget = widget
+        self.text   = text
+        self.tip    = None
+        widget.bind("<Enter>", self._show)
+        widget.bind("<Leave>", self._hide)
+        widget.bind("<Button-1>", self._show)
+
+    def _show(self, event=None):
+        if self.tip:
+            return
+        x = self.widget.winfo_rootx() + 20
+        y = self.widget.winfo_rooty() + 20
+        self.tip = tk.Toplevel(self.widget)
+        self.tip.wm_overrideredirect(True)
+        self.tip.wm_geometry(f"+{x}+{y}")
+        frame = tk.Frame(self.tip, bg=C["card2"], bd=0,
+                         highlightthickness=1, highlightbackground=C["border"])
+        frame.pack()
+        tk.Label(frame, text=self.text, font=("Segoe UI", 9),
+                 bg=C["card2"], fg=C["text"],
+                 wraplength=260, justify="left",
+                 padx=10, pady=8).pack()
+
+    def _hide(self, event=None):
+        if self.tip:
+            self.tip.destroy()
+            self.tip = None
+
+
+def _tip_label(parent, text, tooltip, row, col, padx=0):
+    """Render a muted setting label + a small cyan ? icon with a tooltip, in a parent grid."""
+    # Container so label and ? sit side-by-side without disturbing the grid
+    frame = tk.Frame(parent, bg=C["card2"])
+    frame.grid(row=row, column=col, sticky="w", padx=(padx, 0))
+    tk.Label(frame, text=text, font=("Segoe UI", 7, "bold"),
+             bg=C["card2"], fg=C["muted"]).pack(side="left")
+    tip_icon = tk.Label(frame, text=" ?", font=("Segoe UI", 7, "bold"),
+                        bg=C["card2"], fg=C["accent"], cursor="question_arrow")
+    tip_icon.pack(side="left")
+    _Tooltip(tip_icon, tooltip)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -135,57 +179,71 @@ class AccountPanel:
         creds.pack(fill="x", padx=14, pady=(0, 8))
 
         # Token
-        tk.Label(creds, text="TOKEN", font=("Segoe UI", 7, "bold"),
-                 bg=C["card2"], fg=C["muted"]).grid(row=0, column=0, sticky="w")
+        _tip_label(creds, "TOKEN", "Your Discord user token. Used to log in as your account.", row=0, col=0)
         self.token_var = tk.StringVar(value=self.data.get("token", ""))
         te = _entry(creds, self.token_var, show="•", width=36)
         te.grid(row=1, column=0, sticky="ew", pady=(2, 6), ipady=5)
 
         # Channel ID
-        tk.Label(creds, text="CHANNEL ID", font=("Segoe UI", 7, "bold"),
-                 bg=C["card2"], fg=C["muted"]).grid(row=0, column=1, sticky="w", padx=(16, 0))
+        _tip_label(creds, "CHANNEL ID", "The Discord channel ID where Karuta commands will be sent.", row=0, col=1, padx=16)
         self.channel_var = tk.StringVar(value=self.data.get("channel_id", ""))
         ce = _entry(creds, self.channel_var, width=18)
         ce.grid(row=1, column=1, sticky="ew", pady=(2, 6), padx=(16, 0), ipady=5)
 
         # Visit Card Code
-        tk.Label(creds, text="VISIT CARD CODE", font=("Segoe UI", 7, "bold"),
-                 bg=C["card2"], fg=C["muted"]).grid(row=0, column=2, sticky="w", padx=(16, 0))
+        _tip_label(creds, "VISIT CARD CODE",
+                   "Optional. Pin a specific card code to always visit (e.g. nkkmpd).\n"
+                   "If set, skips k!affectionlist entirely and visits only this card.",
+                   row=0, col=2, padx=16)
         self.visit_card_var = tk.StringVar(value=self.data.get("visit_card_code", ""))
         ve = _entry(creds, self.visit_card_var, width=12)
         ve.grid(row=1, column=2, sticky="ew", pady=(2, 6), padx=(16, 0), ipady=5)
+
+        # Visit Tag
+        _tip_label(creds, "VISIT TAG",
+                   "Optional. A card tag name to prioritise during visits.\n"
+                   "Cards in this tag that aren't on your affectionlist are visited first "
+                   "(to add them). Cards in the tag that are on the affectionlist are "
+                   "prioritised over non-tag cards. Energy ≥5 is still required for "
+                   "affectionlist cards.",
+                   row=0, col=3, padx=16)
+        self.visit_tag_var = tk.StringVar(value=self.data.get("visit_tag", ""))
+        vte = _entry(creds, self.visit_tag_var, width=14)
+        vte.grid(row=1, column=3, sticky="ew", pady=(2, 6), padx=(16, 0), ipady=5)
 
         # ── Settings row ──
         settings = tk.Frame(self.frame, bg=C["card2"])
         settings.pack(fill="x", padx=14, pady=(0, 4))
 
-        tk.Label(settings, text="MAX DROPS", font=("Segoe UI", 7, "bold"),
-                 bg=C["card2"], fg=C["muted"]).grid(row=0, column=0, sticky="w")
+        _tip_label(settings, "MAX DROPS",
+                   "Maximum k!drop commands per day.\n"
+                   "The bot stops dropping once this limit is reached and waits until midnight.",
+                   row=0, col=0)
         self.max_drops_var = tk.IntVar(value=self.data.get("max_drops", MAX_DROPS_PER_DAY))
         tk.Spinbox(settings, from_=1, to=48, textvariable=self.max_drops_var,
                    width=5, bg=C["dark"], fg=C["text"], relief="flat",
                    font=("Segoe UI", 10), buttonbackground=C["card"],
                    ).grid(row=1, column=0, sticky="w", pady=(2, 0), ipady=4)
 
-        tk.Label(settings, text="JITTER MIN (mins)", font=("Segoe UI", 7, "bold"),
-                 bg=C["card2"], fg=C["muted"]).grid(row=0, column=1, sticky="w", padx=(20, 0))
+        _tip_label(settings, "JITTER MIN (mins)",
+                   "Minimum random minutes added on top of the k!reminders drop cooldown.\n"
+                   "Adds human-like variation to avoid a fixed timing pattern.",
+                   row=0, col=1, padx=20)
         self.jitter_min_var = tk.IntVar(value=self.data.get("jitter_min", DROP_JITTER_MIN))
         tk.Spinbox(settings, from_=0, to=30, textvariable=self.jitter_min_var,
                    width=5, bg=C["dark"], fg=C["text"], relief="flat",
                    font=("Segoe UI", 10), buttonbackground=C["card"],
                    ).grid(row=1, column=1, sticky="w", padx=(20, 0), pady=(2, 0), ipady=4)
 
-        tk.Label(settings, text="JITTER MAX (mins)", font=("Segoe UI", 7, "bold"),
-                 bg=C["card2"], fg=C["muted"]).grid(row=0, column=2, sticky="w", padx=(12, 0))
+        _tip_label(settings, "JITTER MAX (mins)",
+                   "Maximum random minutes added on top of the k!reminders drop cooldown.\n"
+                   "A random value between JITTER MIN and JITTER MAX is chosen each cycle.",
+                   row=0, col=2, padx=12)
         self.jitter_max_var = tk.IntVar(value=self.data.get("jitter_max", DROP_JITTER_MAX))
         tk.Spinbox(settings, from_=0, to=60, textvariable=self.jitter_max_var,
                    width=5, bg=C["dark"], fg=C["text"], relief="flat",
                    font=("Segoe UI", 10), buttonbackground=C["card"],
                    ).grid(row=1, column=2, sticky="w", padx=(12, 0), pady=(2, 0), ipady=4)
-
-        tk.Label(settings, text="jitter added to k!reminders cooldown",
-                 font=("Segoe UI", 8), bg=C["card2"], fg=C["muted"]
-                 ).grid(row=1, column=3, padx=(12, 0), sticky="w")
 
         # ── Button row ──
         _divider(self.frame, pady=6)
@@ -326,6 +384,7 @@ class AccountPanel:
             "jitter_min":      self.jitter_min_var.get(),
             "jitter_max":      self.jitter_max_var.get(),
             "visit_card_code": self.visit_card_var.get().strip(),
+            "visit_tag":       self.visit_tag_var.get().strip(),
             "enabled":         True,
         }
 
