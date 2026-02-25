@@ -513,23 +513,25 @@ async def do_work(app, client, channel):
             return
 
     top5_names = {c["name"] for c in top5}
-    top5_by_name = {c["name"]: c["code"] for c in top5}
     app.ui_log(f"   🏆 Top 5 by effort: " + ", ".join(c["name"] for c in top5))
 
-    # ── Find slots that need replacing ──
-    current_names = set(slots.values())
-    slots_to_replace = {s: n for s, n in slots.items() if n not in top5_names}
-    replacements = [c for c in top5 if c["name"] not in current_names]
+    # ── Explicitly determine what needs to change ──
+    # Top-5 names already sitting in a slot — leave them alone
+    already_placed = {name for name in slots.values() if name in top5_names}
+    # Slots whose current worker is NOT in top 5 — these need replacing
+    bad_slots = [(slot, name) for slot, name in slots.items() if name not in top5_names]
+    # Top-5 cards not yet in any slot — these get slotted in
+    to_add = [c for c in top5 if c["name"] not in already_placed]
 
-    if not slots_to_replace:
-        app.ui_log("   ✅ All workers are already top 5 — running k!work")
+    if not bad_slots:
+        app.ui_log("   ✅ All workers already in top 5 — running k!work")
     else:
-        app.ui_log(f"   🔄 Replacing {len(slots_to_replace)} worker(s)...")
-        for (slot, old_name), replacement in zip(slots_to_replace.items(), replacements):
-            new_code = replacement["code"]
-            new_name = replacement["name"]
-            app.ui_log(f"   🔄 Slot {slot}: {old_name} → {new_name} (k!jobworker {slot} {new_code})")
-            await channel.send(f"k!jobworker {slot} {new_code}")
+        app.ui_log(f"   🔄 {len(bad_slots)} slot(s) to replace: " +
+                   ", ".join(f"{s}({n})" for s, n in bad_slots))
+        for (slot, old_name), new_card in zip(bad_slots, to_add):
+            app.ui_log(f"   🔄 Slot {slot}: {old_name} → {new_card['name']} "
+                       f"(k!jobworker {slot} {new_card['code']})")
+            await channel.send(f"k!jobworker {slot} {new_card['code']}")
             try:
                 await client.wait_for("message", check=check, timeout=10)
             except asyncio.TimeoutError:
@@ -550,7 +552,25 @@ async def do_work(app, client, channel):
             await channel.send("k!buy work permit")
             try:
                 buy_msg = await client.wait_for("message", check=check, timeout=10)
-                app.ui_log(f"   💳 Buy result: {buy_msg.content[:100] or 'OK'}")
+                # Click the ✅ confirm button on the purchase embed
+                confirm_btn = None
+                for row in getattr(buy_msg, "components", []):
+                    for btn in row.children:
+                        emoji_str = str(getattr(btn, "emoji", "") or "")
+                        if "white_check_mark" in emoji_str or "✅" in emoji_str:
+                            confirm_btn = btn
+                            break
+                    if confirm_btn:
+                        break
+                if confirm_btn:
+                    try:
+                        await confirm_btn.click()
+                        app.ui_log("   💳 Confirmed permit purchase")
+                        await asyncio.sleep(2)
+                    except Exception as e:
+                        app.ui_log(f"   ⚠ Permit confirm click failed: {e}")
+                else:
+                    app.ui_log("   ⚠ Could not find confirm button on permit purchase")
             except asyncio.TimeoutError:
                 app.ui_log("   ⚠ k!buy work permit timed out")
             await asyncio.sleep(2)
