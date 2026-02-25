@@ -509,10 +509,23 @@ async def _acquire_work_permit(app, client, channel):
         if await _click_checkmark(app, buy_msg):
             app.ui_log("   💳 Confirmed permit purchase ✅")
             await asyncio.sleep(2)
-            return True
-        return False
+        else:
+            return False
     except asyncio.TimeoutError:
         app.ui_log("   ⚠ k!buy work permit timed out")
+        return False
+
+    # ── Use the permit just bought ──
+    await channel.send("k!use work permit")
+    try:
+        use_msg = await client.wait_for("message", check=check, timeout=10)
+        await asyncio.sleep(1)
+        if await _click_checkmark(app, use_msg):
+            app.ui_log("   💳 Confirmed permit use ✅")
+        await asyncio.sleep(2)
+        return True
+    except asyncio.TimeoutError:
+        app.ui_log("   ⚠ k!use work permit timed out")
         return False
 
 
@@ -554,32 +567,40 @@ async def do_work(app, client, channel):
     slots = _parse_jb(jb_desc)
 
     if not slots:
-        app.ui_log("   ⚠ Could not parse k!jb — aborting")
-        return
-
-    app.ui_log("   📋 Board: " + ", ".join(f"{s}=[{slots.get(s, '?')}]" for s in "ABCDE"))
-
-    # ── Step 3: compare — never touch slots already holding a top-5 worker ──
-    safe_names = {name for name in slots.values() if name in top5_names}
-    bad_slots  = [(slot, name) for slot, name in slots.items() if name not in top5_names]
-    available  = [c for c in top5 if c["name"] not in safe_names]
-
-    for slot, name in slots.items():
-        status = "✅ top5 — keeping" if name in top5_names else "❌ not top5 — replacing"
-        app.ui_log(f"   🔍 Slot {slot}: [{name}] {status}")
-
-    if not bad_slots:
-        app.ui_log("   ✅ All slots already have top-5 workers")
-    else:
-        for (slot, old_name), new_card in zip(bad_slots, available):
-            cmd = f"k!jobworker {slot} {new_card['code']}"
-            app.ui_log(f"   🔄 {slot}: [{old_name}] → [{new_card['name']}]  ({cmd})")
+        app.ui_log("   📋 Board is empty — filling all 5 slots with top-5 workers")
+        for letter, new_card in zip("ABCDE", top5):
+            cmd = f"k!jobworker {letter} {new_card['code']}"
+            app.ui_log(f"   🔄 Slot {letter}: [empty] → [{new_card['name']}]  ({cmd})")
             await channel.send(cmd)
             try:
                 await client.wait_for("message", check=check, timeout=10)
             except asyncio.TimeoutError:
-                app.ui_log(f"   ⚠ k!jobworker {slot} timed out — continuing")
+                app.ui_log(f"   ⚠ k!jobworker {letter} timed out — continuing")
             await asyncio.sleep(2)
+    else:
+        app.ui_log("   📋 Board: " + ", ".join(f"{s}=[{slots.get(s, '?')}]" for s in "ABCDE"))
+
+        # ── Step 3: compare — never touch slots already holding a top-5 worker ──
+        safe_names = {name for name in slots.values() if name in top5_names}
+        bad_slots  = [(slot, name) for slot, name in slots.items() if name not in top5_names]
+        available  = [c for c in top5 if c["name"] not in safe_names]
+
+        for slot, name in slots.items():
+            status = "✅ top5 — keeping" if name in top5_names else "❌ not top5 — replacing"
+            app.ui_log(f"   🔍 Slot {slot}: [{name}] {status}")
+
+        if not bad_slots:
+            app.ui_log("   ✅ All slots already have top-5 workers")
+        else:
+            for (slot, old_name), new_card in zip(bad_slots, available):
+                cmd = f"k!jobworker {slot} {new_card['code']}"
+                app.ui_log(f"   🔄 {slot}: [{old_name}] → [{new_card['name']}]  ({cmd})")
+                await channel.send(cmd)
+                try:
+                    await client.wait_for("message", check=check, timeout=10)
+                except asyncio.TimeoutError:
+                    app.ui_log(f"   ⚠ k!jobworker {slot} timed out — continuing")
+                await asyncio.sleep(2)
 
     # ── Step 4: k!nodes — find slot-2 node and assign all workers to it ──
     await asyncio.sleep(1)
