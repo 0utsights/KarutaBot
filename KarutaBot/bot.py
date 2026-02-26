@@ -382,17 +382,37 @@ async def maybe_tag_burn(app, client, channel, card):
     app.ui_log(f"🔥 {card['name']} eligible for burn (#{card['print']}, "
                f"{card['wishes']} wishes) — tagging...")
 
-    await channel.send("k!tag burn")
+    async def send_with_retry(cmd, retries=3, delay=5):
+        """Send a command, retrying on 503/server errors."""
+        for attempt in range(retries):
+            try:
+                await channel.send(cmd)
+                return True
+            except discord.errors.DiscordServerError as e:
+                if attempt < retries - 1:
+                    app.ui_log(f"   ⚠ Discord 503 on '{cmd}' — retrying in {delay}s... ({attempt+1}/{retries})")
+                    await asyncio.sleep(delay)
+                else:
+                    app.ui_log(f"   ❌ Discord server error after {retries} attempts: {e}")
+                    return False
+            except Exception as e:
+                app.ui_log(f"   ❌ Unexpected error sending '{cmd}': {e}")
+                return False
+        return False
 
     def check(m):
         return (m.channel.id == channel.id and m.author.id == KARUTA_ID)
+
+    if not await send_with_retry("k!tag burn"):
+        return
+
     try:
         msg = await client.wait_for("message", check=check, timeout=10)
         if "does not exist" in msg.content.lower():
             app.ui_log("   📌 Creating 'burn' tag...")
-            await channel.send("k!tagcreate burn :fire:")
+            await send_with_retry("k!tagcreate burn :fire:")
             await asyncio.sleep(2)
-            await channel.send("k!tag burn")
+            await send_with_retry("k!tag burn")
             app.ui_log("   ✅ Tagged for burn.")
         else:
             app.ui_log("   ✅ Tagged for burn.")
