@@ -1,7 +1,9 @@
 import tkinter as tk
-from tkinter import scrolledtext
+from tkinter import scrolledtext, filedialog, messagebox
 import threading
 import webbrowser
+import json
+import os
 from datetime import datetime
 
 from config import (C, APP_NAME, APP_VERSION, MAX_DROPS_PER_DAY,
@@ -364,16 +366,21 @@ class AccountPanel:
             self.app.root.after(0, self.update_drops_label)
 
     def _update_timer(self):
-        if self.next_drop_time and self.running:
-            remaining = self.next_drop_time - datetime.now()
-            if remaining.total_seconds() > 0:
-                mins, secs = divmod(int(remaining.total_seconds()), 60)
-                self.timer_label.config(text=f"{mins:02d}:{secs:02d}")
+        try:
+            if not self.timer_label.winfo_exists():
+                return
+            if self.next_drop_time and self.running:
+                remaining = self.next_drop_time - datetime.now()
+                if remaining.total_seconds() > 0:
+                    mins, secs = divmod(int(remaining.total_seconds()), 60)
+                    self.timer_label.config(text=f"{mins:02d}:{secs:02d}")
+                else:
+                    self.timer_label.config(text="NOW")
             else:
-                self.timer_label.config(text="NOW")
-        else:
-            self.timer_label.config(text="--:--")
-        self.app.root.after(1000, self._update_timer)
+                self.timer_label.config(text="--:--")
+            self.app.root.after(1000, self._update_timer)
+        except tk.TclError:
+            pass  # widget destroyed — stop updating
 
     def get_data(self):
         return {
@@ -491,6 +498,8 @@ class KarutaApp:  # KarutaApp name kept for internal compatibility only
         tr.pack(side="right", padx=16)
 
         _btn(tr, "+ Add Account", self.add_account, C["accent"], small=True).pack(side="left", padx=4)
+        _btn(tr, "📂 Import",     self.import_config, C["card2"], small=True).pack(side="left", padx=4)
+        _btn(tr, "💾 Export",     self.export_config, C["card2"], small=True).pack(side="left", padx=4)
         _btn(tr, "❓ Token Help",  self.show_token_help, C["card2"], small=True).pack(side="left", padx=4)
 
         # ── Thin accent line under topbar ──
@@ -547,6 +556,79 @@ class KarutaApp:  # KarutaApp name kept for internal compatibility only
         panel = AccountPanel(self.accounts_frame, self, idx, data)
         self.panels.append(panel)
         return panel
+
+    def import_config(self):
+        """Load accounts from a JSON config file, replacing current accounts."""
+        path = filedialog.askopenfilename(
+            title="Import Aeyori Config",
+            filetypes=[("JSON files", "*.json"), ("All files", "*.*")],
+        )
+        if not path:
+            return
+        try:
+            with open(path, "r") as f:
+                data = json.load(f)
+        except Exception as e:
+            messagebox.showerror("Import Failed", f"Could not read file:\n{e}")
+            return
+
+        if isinstance(data, list):
+            accounts = data
+        elif isinstance(data, dict) and "accounts" in data:
+            accounts = data["accounts"]
+        else:
+            messagebox.showerror("Import Failed", "File format not recognised.\nExpected {\"accounts\": [...]} or a list of account objects.")
+            return
+
+        if not accounts:
+            messagebox.showwarning("Import", "No accounts found in file.")
+            return
+
+        confirm = messagebox.askyesno(
+            "Import Config",
+            f"This will replace all {len(self.panels)} current account(s) with "
+            f"{len(accounts)} account(s) from the file.\n\nContinue?"
+        )
+        if not confirm:
+            return
+
+        for panel in list(self.panels):
+            if getattr(panel, "running", False):
+                panel.running = False
+            panel.outer.destroy()
+        self.panels.clear()
+
+        for acc in accounts:
+            self._add_panel(acc)
+
+        self.save_all()
+        messagebox.showinfo("Import Complete", f"Loaded {len(accounts)} account(s) from file.")
+
+    def export_config(self):
+        """Save current account config to a JSON file."""
+        path = filedialog.asksaveasfilename(
+            title="Export Aeyori Config",
+            defaultextension=".json",
+            initialfile="aeyori_config.json",
+            filetypes=[("JSON files", "*.json"), ("All files", "*.*")],
+        )
+        if not path:
+            return
+        accounts = [p.get_data() for p in self.panels]
+        strip = messagebox.askyesno(
+            "Export Config",
+            "Remove tokens from export?\n\n"
+            "(Recommended if sharing — you can re-enter them after importing.)"
+        )
+        if strip:
+            for acc in accounts:
+                acc["token"] = ""
+        try:
+            with open(path, "w") as f:
+                json.dump({"accounts": accounts}, f, indent=2)
+            messagebox.showinfo("Export Complete", f"Config saved to:\n{path}")
+        except Exception as e:
+            messagebox.showerror("Export Failed", f"Could not save file:\n{e}")
 
     def add_account(self):
         self._add_panel()
