@@ -12,36 +12,41 @@ LU_COOLDOWN_SECS = 11  # k!lu has a 10s cooldown — we wait 11 to be safe
 # ─────────────────────────────────────────────
 #  Global send helper — retries on 503
 # ─────────────────────────────────────────────
-async def send_safe(app, channel, content, retries=4, base_delay=8):
+async def send_safe(app, channel, client, content, retries=4, base_delay=8):
     """Send a message, retrying on Discord 503 server errors.
-    Also detects 'cannot use that command for another X seconds' and waits automatically.
+    Also detects Karuta cooldown replies ('cannot use that command for another X seconds')
+    that arrive AFTER our specific message, and waits automatically before retrying.
+    Only listens for the immediate Karuta response to our send — ignores other users' interactions.
     Returns True on success, False if all retries exhausted.
     """
     for attempt in range(retries):
         try:
-            await channel.send(content)
+            sent = await channel.send(content)
 
-            # Peek for a cooldown message from Karuta within 2s
-            def _is_cooldown(m):
+            # Listen for Karuta's reply to OUR message specifically.
+            # We use sent.id as the anchor — only accept Karuta messages that arrive
+            # after our message was sent (by comparing message IDs, which are snowflakes
+            # and monotonically increase with time).
+            def _is_our_cooldown(m):
                 return (
                     m.channel.id == channel.id
                     and m.author.id == KARUTA_ID
+                    and m.id > sent.id
                     and "cannot use that command" in m.content.lower()
                 )
+
             try:
                 cd_msg = await asyncio.wait_for(
-                    _wait_for_message(channel, _is_cooldown), timeout=2.0
+                    client.wait_for("message", check=_is_our_cooldown),
+                    timeout=2.5
                 )
-                # Parse seconds from e.g. "for another `4 seconds`" or "for another `1 minute`"
                 wait_secs = _parse_cooldown_wait(cd_msg.content)
-                buffer = 2
-                total_wait = wait_secs + buffer
+                total_wait = wait_secs + 2  # 2s buffer
                 app.ui_log(f"   ⏳ Cooldown on '{content}' — waiting {total_wait}s...")
                 await asyncio.sleep(total_wait)
-                # Retry the send after waiting
-                continue
+                continue  # retry the send
             except asyncio.TimeoutError:
-                pass  # No cooldown message — all good
+                pass  # no cooldown message — all good
 
             return True
 
@@ -54,19 +59,6 @@ async def send_safe(app, channel, content, retries=4, base_delay=8):
                 app.ui_log(f"   ❌ Discord server error after {retries} attempts: {e}")
                 return False
     return False
-
-
-async def _wait_for_message(channel, check):
-    """Helper: async generator shim so we can use asyncio.wait_for with a check fn."""
-    import discord
-    # We can't call client.wait_for here without client — use a queue trick
-    # Instead callers that need full wait_for use client directly;
-    # send_safe uses a short peek via channel history after a tiny sleep
-    await asyncio.sleep(0.4)
-    async for msg in channel.history(limit=3):
-        if check(msg):
-            return msg
-    raise asyncio.TimeoutError
 
 
 def _parse_cooldown_wait(text):
@@ -150,7 +142,7 @@ def run_discord_loop(app, token, channel_id):
 #  Value is seconds until ready (0 = ready now)
 # ─────────────────────────────────────────────
 async def fetch_reminders(app, client, channel):
-    await send_safe(app, channel, "k!reminders")
+    await send_safe(app, channel, client, "k!reminders")
 
     def check(m):
         return (m.channel.id == channel.id and
@@ -293,7 +285,7 @@ async def do_drop(app, client, channel):
         return
 
     try:
-        await send_safe(app, channel, "k!drop")
+        await send_safe(app, channel, client, "k!drop")
         app.drops_today += 1
         app.ui_log(f"🃏 Dropped! ({app.drops_today}/{app.max_drops_var.get()} today)")
         app.app.root.after(0, app.update_drops_label)
@@ -379,7 +371,7 @@ async def _send_lu(app, client, channel, card_name):
         app.ui_log(f"   ⏳ k!lu cooldown — waiting {wait:.1f}s")
         await asyncio.sleep(wait)
 
-    await send_safe(app, channel, f"k!lu {card_name}")
+    await send_safe(app, channel, client, f"k!lu {card_name}")
     app._last_lu_time = time.time()
 
     def check(m):
@@ -395,7 +387,7 @@ async def _send_lu(app, client, channel, card_name):
             wait_secs  = int(secs_match.group(1)) + 1 if secs_match else LU_COOLDOWN_SECS
             app.ui_log(f"   ⏳ k!lu cooldown from Karuta — waiting {wait_secs}s")
             await asyncio.sleep(wait_secs)
-            await send_safe(app, channel, f"k!lu {card_name}")
+            await send_safe(app, channel, client, f"k!lu {card_name}")
             app._last_lu_time = time.time()
             msg = await client.wait_for("message", check=check, timeout=15)
         return msg
@@ -470,16 +462,16 @@ async def maybe_tag_burn(app, client, channel, card):
     def check(m):
         return (m.channel.id == channel.id and m.author.id == KARUTA_ID)
 
-    if not await send_safe(app, channel, "k!tag burn"):
+    if not await send_safe(app, channel, client, "k!tag burn"):
         return
 
     try:
         msg = await client.wait_for("message", check=check, timeout=10)
         if "does not exist" in msg.content.lower():
             app.ui_log("   📌 Creating 'burn' tag...")
-            await send_safe(app, channel, "k!tagcreate burn :fire:")
+            await send_safe(app, channel, client, "k!tagcreate burn :fire:")
             await asyncio.sleep(2)
-            await send_safe(app, channel, "k!tag burn")
+            await send_safe(app, channel, client, "k!tag burn")
             app.ui_log("   ✅ Tagged for burn.")
         else:
             app.ui_log("   ✅ Tagged for burn.")
@@ -562,7 +554,7 @@ async def _acquire_work_permit(app, client, channel):
 
     # ── Check inventory first ──
     app.ui_log("   💳 Checking inventory for work permit (k!i name=work)...")
-    await send_safe(app, channel, "k!i name=work")
+    await send_safe(app, channel, client, "k!i name=work")
     try:
         inv_msg = await client.wait_for("message", check=check, timeout=12)
         inv_text = inv_msg.content
@@ -572,7 +564,7 @@ async def _acquire_work_permit(app, client, channel):
         if "work permit" in inv_text.lower():
             app.ui_log("   💳 Work permit found in inventory — using it...")
             await asyncio.sleep(1)
-            await send_safe(app, channel, "k!use work permit")
+            await send_safe(app, channel, client, "k!use work permit")
             try:
                 use_msg = await client.wait_for("message", check=check, timeout=10)
                 await asyncio.sleep(1)
@@ -590,7 +582,7 @@ async def _acquire_work_permit(app, client, channel):
 
     # ── Buy permit ──
     await asyncio.sleep(1)
-    await send_safe(app, channel, "k!buy work permit")
+    await send_safe(app, channel, client, "k!buy work permit")
     try:
         buy_msg = await client.wait_for("message", check=check, timeout=10)
         if await _click_checkmark(app, buy_msg):
@@ -603,7 +595,7 @@ async def _acquire_work_permit(app, client, channel):
         return False
 
     # ── Use the permit just bought ──
-    await send_safe(app, channel, "k!use work permit")
+    await send_safe(app, channel, client, "k!use work permit")
     try:
         use_msg = await client.wait_for("message", check=check, timeout=10)
         await asyncio.sleep(1)
@@ -623,7 +615,7 @@ async def do_work(app, client, channel):
         return m.channel.id == channel.id and m.author.id == KARUTA_ID
 
     # ── Step 1: fetch top 5 by effort ──
-    await send_safe(app, channel, "k!c sort=effort")
+    await send_safe(app, channel, client, "k!c sort=effort")
     try:
         c_msg = await client.wait_for("message", check=check, timeout=12)
     except asyncio.TimeoutError:
@@ -643,7 +635,7 @@ async def do_work(app, client, channel):
     await asyncio.sleep(2)
 
     # ── Step 2: fetch current job board ──
-    await send_safe(app, channel, "k!jb")
+    await send_safe(app, channel, client, "k!jb")
     try:
         jb_msg = await client.wait_for("message", check=check, timeout=12)
     except asyncio.TimeoutError:
@@ -658,7 +650,7 @@ async def do_work(app, client, channel):
         for letter, new_card in zip("ABCDE", top5):
             cmd = f"k!jobworker {letter} {new_card['code']}"
             app.ui_log(f"   🔄 Slot {letter}: [empty] → [{new_card['name']}]  ({cmd})")
-            await send_safe(app, channel, cmd)
+            await send_safe(app, channel, client, cmd)
             try:
                 await client.wait_for("message", check=check, timeout=10)
             except asyncio.TimeoutError:
@@ -682,7 +674,7 @@ async def do_work(app, client, channel):
             for (slot, old_name), new_card in zip(bad_slots, available):
                 cmd = f"k!jobworker {slot} {new_card['code']}"
                 app.ui_log(f"   🔄 {slot}: [{old_name}] → [{new_card['name']}]  ({cmd})")
-                await send_safe(app, channel, cmd)
+                await send_safe(app, channel, client, cmd)
                 try:
                     await client.wait_for("message", check=check, timeout=10)
                 except asyncio.TimeoutError:
@@ -691,7 +683,7 @@ async def do_work(app, client, channel):
 
     # ── Step 4: k!nodes — find slot-2 node and assign all workers to it ──
     await asyncio.sleep(1)
-    await send_safe(app, channel, "k!nodes")
+    await send_safe(app, channel, client, "k!nodes")
     try:
         nodes_msg = await client.wait_for("message", check=check, timeout=12)
         nodes_desc = "".join(str(emb.description or "") for emb in nodes_msg.embeds)
@@ -708,7 +700,7 @@ async def do_work(app, client, channel):
         if node_name:
             cmd = f"k!jobnode a b c d e {node_name}"
             app.ui_log(f"   🌐 Assigning all workers to node '{node_name}' ({cmd})")
-            await send_safe(app, channel, cmd)
+            await send_safe(app, channel, client, cmd)
             try:
                 await client.wait_for("message", check=check, timeout=10)
                 app.ui_log(f"   ✅ Workers assigned to '{node_name}'")
@@ -722,7 +714,7 @@ async def do_work(app, client, channel):
 
     # ── Step 5: run k!work ──
     await asyncio.sleep(1)
-    await send_safe(app, channel, "k!work")
+    await send_safe(app, channel, client, "k!work")
     try:
         work_msg = await client.wait_for("message", check=check, timeout=12)
         full_text = work_msg.content
@@ -733,7 +725,7 @@ async def do_work(app, client, channel):
             acquired = await _acquire_work_permit(app, client, channel)
             if acquired:
                 await asyncio.sleep(2)
-                await send_safe(app, channel, "k!work")
+                await send_safe(app, channel, client, "k!work")
                 try:
                     retry_msg = await client.wait_for("message", check=check, timeout=12)
                     await asyncio.sleep(1)
@@ -758,7 +750,7 @@ async def do_work(app, client, channel):
 # ─────────────────────────────────────────────
 async def do_daily(app, client, channel):
     app.ui_log("📅 Claiming daily...")
-    await send_safe(app, channel, "k!daily")
+    await send_safe(app, channel, client, "k!daily")
 
     def check_msg(m):
         return m.channel.id == channel.id and m.author.id == KARUTA_ID
@@ -959,7 +951,7 @@ async def _fetch_affectionlist(app, client, channel):
     """Send k!affectionlist, handle pagination, return all parsed cards."""
     all_cards = []
 
-    await send_safe(app, channel, "k!affectionlist")
+    await send_safe(app, channel, client, "k!affectionlist")
     def check_al(m):
         return m.channel.id == channel.id and m.author.id == KARUTA_ID
 
@@ -1001,7 +993,7 @@ async def _fetch_affectionlist(app, client, channel):
 async def _fetch_tag_codes(app, client, channel, tag):
     """Send k!c tag=<tag>, paginate, return set of card codes found in the collection."""
     codes = set()
-    await send_safe(app, channel, f"k!c tag={tag}")
+    await send_safe(app, channel, client, f"k!c tag={tag}")
 
     def check(m):
         return m.channel.id == channel.id and m.author.id == KARUTA_ID
@@ -1097,7 +1089,7 @@ def _rank_visit_cards(cards, tag_codes=None):
 
 async def _check_card_owned(app, client, channel, code):
     """Send k!c code=<id> and return True if the card exists in the collection, False if empty."""
-    await send_safe(app, channel, f"k!c code={code}")
+    await send_safe(app, channel, client, f"k!c code={code}")
 
     def check(m):
         return m.channel.id == channel.id and m.author.id == KARUTA_ID
@@ -1177,7 +1169,7 @@ async def do_visit(app, client, channel):
                 app.ui_log("🏛 No owned eligible cards found — running k!visit with no code")
     cmd       = f"k!visit {card_code}" if card_code else "k!visit"
     app.ui_log(f"🏛 Visiting shrine... ({cmd})")
-    await send_safe(app, channel, cmd)
+    await send_safe(app, channel, client, cmd)
 
     def check_msg(m):
         return m.channel.id == channel.id and m.author.id == KARUTA_ID
