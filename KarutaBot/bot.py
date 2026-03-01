@@ -293,23 +293,26 @@ async def _do_vote_auto(app, client, channel):
         return
 
     # Run the browser pipeline in a thread so we don't block the event loop.
-    # The browser takes ~20-40 seconds — the bot continues normally.
     loop = asyncio.get_event_loop()
     try:
         from vote import auto_vote
+    except ImportError:
+        app.ui_log("❌ [Auto] vote.py not found or undetected-chromedriver not installed")
+        app.ui_log("   Run: pip install undetected-chromedriver selenium")
+        return
+
+    try:
         success = await loop.run_in_executor(
             None, lambda: auto_vote(token, ui_log=app.ui_log)
         )
         if not success:
-            app.ui_log("⚠ [Auto] Automatic vote failed — "
-                       "falling back to semi-auto")
+            app.ui_log("⚠ [Auto] Headless vote failed — falling back to semi")
             await _do_vote_semi(app, client, channel)
-    except ImportError:
-        app.ui_log("⚠ [Auto] vote.py module not found — "
-                   "falling back to semi-auto")
-        await _do_vote_semi(app, client, channel)
     except Exception as exc:
-        app.ui_log(f"⚠ [Auto] Vote error: {exc} — falling back to semi-auto")
+        import traceback
+        app.ui_log(f"❌ [Auto] Vote pipeline crashed: {exc}")
+        app.ui_log(f"   {traceback.format_exc().splitlines()[-2]}")
+        app.ui_log("⚠ [Auto] Falling back to semi")
         await _do_vote_semi(app, client, channel)
 
 
@@ -341,8 +344,11 @@ async def _do_vote_semi(app, client, channel):
         if embed.url:
             all_text += " " + embed.url
 
+    # Discord wraps URLs in <angle brackets> to suppress embeds — strip them
+    all_text = all_text.replace("<", " ").replace(">", " ")
+
     url_match = re.search(
-        r'https?://(?:karuta\.com/vote|top\.gg/bot/\d+/vote)\S*',
+        r'https?://(?:karuta\.com/vote|top\.gg/bot/\d+/vote)',
         all_text,
     )
     if url_match:

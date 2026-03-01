@@ -57,7 +57,51 @@ def _create_driver(headless=True):
     options.add_argument("--log-level=3")
     options.add_argument("--silent")
 
-    driver = uc.Chrome(options=options, use_subprocess=True)
+    # Detect installed Chrome version so we download the matching driver.
+    # undetected-chromedriver sometimes guesses wrong (e.g. grabs v146
+    # when v145 is installed), so we read it ourselves.
+    chrome_ver = None
+    try:
+        import subprocess, re as _re
+        # Windows: query registry for Chrome version
+        result = subprocess.run(
+            ['reg', 'query',
+             r'HKEY_CURRENT_USER\Software\Google\Chrome\BLBeacon',
+             '/v', 'version'],
+            capture_output=True, text=True, timeout=5
+        )
+        match = _re.search(r'(\d+)\.', result.stdout)
+        if match:
+            chrome_ver = int(match.group(1))
+            log.info(f"Detected Chrome version: {chrome_ver}")
+    except Exception:
+        pass
+
+    if not chrome_ver:
+        # Fallback: try reading from the Chrome executable directly
+        try:
+            import subprocess, re as _re
+            for path in [
+                r"C:\Program Files\Google\Chrome\Application\chrome.exe",
+                r"C:\Program Files (x86)\Google\Chrome\Application\chrome.exe",
+            ]:
+                result = subprocess.run(
+                    [path, "--version"],
+                    capture_output=True, text=True, timeout=5
+                )
+                match = _re.search(r'(\d+)\.', result.stdout)
+                if match:
+                    chrome_ver = int(match.group(1))
+                    break
+        except Exception:
+            pass
+
+    kwargs = dict(options=options, use_subprocess=True)
+    if chrome_ver:
+        kwargs["version_main"] = chrome_ver
+        log.info(f"Requesting ChromeDriver for Chrome {chrome_ver}")
+
+    driver = uc.Chrome(**kwargs)
     driver.set_page_load_timeout(30)
     driver.implicitly_wait(5)
     return driver
@@ -376,9 +420,15 @@ def auto_vote(token, ui_log=None):
         _log("🗳 [Auto] Launching browser...")
         try:
             driver = _create_driver(headless=True)
-        except ImportError:
-            _log("❌ [Auto] undetected-chromedriver not installed. "
-                 "Run: pip install undetected-chromedriver")
+        except ImportError as ie:
+            import sys
+            py = sys.executable
+            _log(f"❌ [Auto] Import failed: {ie}")
+            _log(f"   Python: {py}")
+            _log(f"   In PowerShell, run:")
+            _log(f'   & "{py}" -m pip install undetected-chromedriver selenium')
+            _log(f"   Or in CMD:")
+            _log(f'   "{py}" -m pip install undetected-chromedriver selenium')
             return False
         except Exception as exc:
             _log(f"❌ [Auto] Could not launch Chrome: {exc}")
