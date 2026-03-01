@@ -1,12 +1,51 @@
+"""
+bot.py — Aeyori Discord automation loop
+
+Handles: drops, grabs, OCR card parsing, wishlist lookup, burn tagging,
+         daily claiming, work optimisation, shrine visits, and vote automation.
+"""
+
 import discord
 import asyncio
 import re
 import random
 import time
+import webbrowser
 from datetime import datetime, timedelta
 from config import KARUTA_ID, DROP_COOLDOWN_MIN, DROP_JITTER_MIN, DROP_JITTER_MAX
 
 LU_COOLDOWN_SECS = 11  # k!lu has a 10s cooldown — we wait 11 to be safe
+
+
+# ─────────────────────────────────────────────
+#  Safe message sending — retries on 503 / 429
+# ─────────────────────────────────────────────
+async def send_safe(channel, content, app=None, retries=2):
+    """Send a message with automatic retry on 503 and rate-limit handling.
+
+    Returns the sent message on success, or None after exhausting retries.
+    """
+    for attempt in range(1 + retries):
+        try:
+            return await channel.send(content)
+        except discord.HTTPException as exc:
+            if exc.status == 503:
+                wait = 30 * (attempt + 1)
+                if app:
+                    app.ui_log(f"⚠ Discord 503 — retrying in {wait}s "
+                               f"(attempt {attempt + 1})")
+                await asyncio.sleep(wait)
+                continue
+            if exc.status == 429:
+                retry_after = getattr(exc, "retry_after", 5) or 5
+                if app:
+                    app.ui_log(f"⚠ Rate limited — waiting {retry_after:.1f}s")
+                await asyncio.sleep(retry_after)
+                continue
+            raise
+    if app:
+        app.ui_log(f"❌ Failed to send '{content[:40]}' after {retries + 1} attempts")
+    return None
 
 
 # ─────────────────────────────────────────────
@@ -21,7 +60,7 @@ def _make_lu_variants(name):
         s = re.sub(r'(?<=[a-z])v(?=[a-z])', 'u', s)
         return s
     def swap_N_to_W(s):
-        return re.sub(r'N([a-zA-Z])', r'W', s)
+        return re.sub(r'\bN([a-zA-Z])', r'W\1', s)
 
     variants = set()
     r1 = swap_uv(name)
@@ -75,7 +114,9 @@ def run_discord_loop(app, token, channel_id):
 #  Value is seconds until ready (0 = ready now)
 # ─────────────────────────────────────────────
 async def fetch_reminders(app, client, channel):
-    await channel.send("k!reminders")
+    msg_sent = await send_safe(channel, "k!reminders", app)
+    if not msg_sent:
+        return {}
 
     def check(m):
         return (m.channel.id == channel.id and
@@ -144,59 +185,142 @@ async def automation_loop(app, client, channel_id):
         return
 
     while app.running:
-        app.reset_daily_if_needed()
+        try:
+            app.reset_daily_if_needed()
 
-        # Fetch reminders at the top of every cycle
-        reminders = await fetch_reminders(app, client, channel)
-        await asyncio.sleep(2)
-
-        # ── Daily ──
-        if reminders.get("Daily") == 0:
-            await do_daily(app, client, channel)
+            # Fetch reminders at the top of every cycle
+            reminders = await fetch_reminders(app, client, channel)
             await asyncio.sleep(2)
 
-        # ── Drop ──
-        drop_cooldown = reminders.get("Drop")  # seconds remaining, 0 = ready, None = unknown
+            # ── Vote ──
+            if reminders.get("Vote") == 0:
+                await do_vote(app, client, channel)
+                await asyncio.sleep(2)
 
-        if app.drops_today >= app.max_drops_var.get():
-            app.ui_log(f"⚠ Daily drop limit reached ({app.max_drops_var.get()}). Skipping drop.")
-        elif drop_cooldown and drop_cooldown > 0:
-            app.ui_log(f"⏱ Drop on cooldown ({int(drop_cooldown // 60)}m) — skipping drop this cycle")
-        else:
-            await do_drop(app, client, channel)
+            # ── Daily ──
+            if reminders.get("Daily") == 0:
+                await do_daily(app, client, channel)
+                await asyncio.sleep(2)
 
-        # ── Work ──
-        if reminders.get("Work") == 0:
-            await do_work(app, client, channel)
+            # ── Drop ──
+            drop_cooldown = reminders.get("Drop")  # seconds remaining, 0 = ready, None = unknown
+
+            if app.drops_today >= app.max_drops_var.get():
+                app.ui_log(f"⚠ Daily drop limit reached ({app.max_drops_var.get()}). Skipping drop.")
+            elif drop_cooldown and drop_cooldown > 0:
+                app.ui_log(f"⏱ Drop on cooldown ({int(drop_cooldown // 60)}m) — skipping drop this cycle")
+            else:
+                await do_drop(app, client, channel)
+
+            # ── Work ──
+            if reminders.get("Work") == 0:
+                await do_work(app, client, channel)
+                await asyncio.sleep(2)
+
+            # ── Visit ──
+            if reminders.get("Visit") == 0:
+                await do_visit(app, client, channel)
+                await asyncio.sleep(2)
+
+            # Re-fetch reminders after all commands so badges and sleep duration are accurate
             await asyncio.sleep(2)
+            reminders = await fetch_reminders(app, client, channel)
 
-        # ── Visit ──
-        if reminders.get("Visit") == 0:
-            await do_visit(app, client, channel)
-            await asyncio.sleep(2)
+            # Sleep until next drop (+ jitter)
+            base_secs = reminders.get("Drop") or (DROP_COOLDOWN_MIN * 60)
+            jitter_min = getattr(app, "jitter_min_var", None)
+            jitter_max = getattr(app, "jitter_max_var", None)
+            j_min  = (jitter_min.get() if jitter_min else DROP_JITTER_MIN) * 60
+            j_max  = (jitter_max.get() if jitter_max else DROP_JITTER_MAX) * 60
+            if j_max < j_min:
+                j_min, j_max = j_max, j_min
+            jitter = random.uniform(j_min, j_max)
+            delay  = base_secs + jitter
 
-        # Re-fetch reminders after all commands so badges and sleep duration are accurate
-        await asyncio.sleep(2)
-        reminders = await fetch_reminders(app, client, channel)
+            app.next_drop_time = datetime.now() + timedelta(seconds=delay)
+            rem_mins = int(base_secs // 60)
+            tot_mins = int(delay // 60)
+            tot_secs = int(delay % 60)
+            app.ui_log(f"⏱ Next drop in {tot_mins}m {tot_secs}s "
+                       f"(cooldown {rem_mins}m + {int(jitter//60)}m jitter)")
+            await asyncio.sleep(delay)
 
-        # Sleep until next drop (+ jitter)
-        base_secs = reminders.get("Drop") or (DROP_COOLDOWN_MIN * 60)
-        jitter_min = getattr(app, "jitter_min_var", None)
-        jitter_max = getattr(app, "jitter_max_var", None)
-        j_min  = (jitter_min.get() if jitter_min else DROP_JITTER_MIN) * 60
-        j_max  = (jitter_max.get() if jitter_max else DROP_JITTER_MAX) * 60
-        if j_max < j_min:
-            j_min, j_max = j_max, j_min
-        jitter = random.uniform(j_min, j_max)
-        delay  = base_secs + jitter
+        except discord.HTTPException as exc:
+            if exc.status == 503:
+                app.ui_log("⚠ Discord 503 in main loop — pausing 60s")
+                await asyncio.sleep(60)
+            else:
+                import traceback
+                app.ui_log(f"❌ HTTP error: {traceback.format_exc()}")
+                await asyncio.sleep(30)
+        except Exception:
+            import traceback
+            app.ui_log(f"❌ Error in main loop: {traceback.format_exc()}")
+            await asyncio.sleep(30)
 
-        app.next_drop_time = datetime.now() + timedelta(seconds=delay)
-        rem_mins = int(base_secs // 60)
-        tot_mins = int(delay // 60)
-        tot_secs = int(delay % 60)
-        app.ui_log(f"⏱ Next drop in {tot_mins}m {tot_secs}s "
-                   f"(cooldown {rem_mins}m + {int(jitter//60)}m jitter)")
-        await asyncio.sleep(delay)
+
+# ─────────────────────────────────────────────
+#  Vote — opens top.gg in user's default browser
+# ─────────────────────────────────────────────
+async def do_vote(app, client, channel):
+    """Send k!vote, extract the vote URL, and open it in the user's browser.
+
+    This is intentionally lightweight — no headless browser, no Selenium.
+    The user clicks the reCAPTCHA checkbox themselves (takes ~5 seconds).
+    Each user is on their own machine/IP, so no same-location concerns.
+    """
+    app.ui_log("🗳 Vote is ready — sending k!vote...")
+
+    msg_sent = await send_safe(channel, "k!vote", app)
+    if not msg_sent:
+        return
+
+    def check(m):
+        return m.channel.id == channel.id and m.author.id == KARUTA_ID
+
+    try:
+        msg = await client.wait_for("message", check=check, timeout=12)
+    except asyncio.TimeoutError:
+        app.ui_log("   ⚠ k!vote timed out")
+        return
+
+    # Extract vote URL from Karuta's response (message content, embeds, buttons)
+    vote_url = None
+    all_text = msg.content or ""
+    for embed in msg.embeds:
+        all_text += " " + str(embed.title or "")
+        all_text += " " + str(embed.description or "")
+        for field in embed.fields:
+            all_text += " " + str(field.value or "")
+        if embed.url:
+            all_text += " " + embed.url
+
+    url_match = re.search(
+        r'https?://(?:karuta\.com/vote|top\.gg/bot/\d+/vote)\S*',
+        all_text,
+    )
+    if url_match:
+        vote_url = url_match.group(0)
+
+    # Also check button/component links
+    for row in getattr(msg, "components", []):
+        for btn in row.children:
+            btn_url = getattr(btn, "url", None)
+            if btn_url and ("vote" in btn_url.lower() or "top.gg" in btn_url.lower()):
+                vote_url = btn_url
+                break
+
+    target_url = vote_url or "https://top.gg/bot/646937666251915264/vote"
+    if not vote_url:
+        app.ui_log("   ⚠ Could not parse vote URL from response — using fallback")
+
+    app.ui_log(f"   🗳 Opening: {target_url}")
+    try:
+        webbrowser.open(target_url)
+        app.ui_log("   🗳 Vote page opened — click the checkbox to complete!")
+    except Exception as exc:
+        app.ui_log(f"   ⚠ Could not open browser: {exc}")
+        app.ui_log(f"   🗳 Vote manually: {target_url}")
 
 
 # ─────────────────────────────────────────────
@@ -208,7 +332,9 @@ async def do_drop(app, client, channel):
         return
 
     try:
-        await channel.send("k!drop")
+        msg_sent = await send_safe(channel, "k!drop", app)
+        if not msg_sent:
+            return
         app.drops_today += 1
         app.ui_log(f"🃏 Dropped! ({app.drops_today}/{app.max_drops_var.get()} today)")
         app.app.root.after(0, app.update_drops_label)
@@ -294,7 +420,7 @@ async def _send_lu(app, client, channel, card_name):
         app.ui_log(f"   ⏳ k!lu cooldown — waiting {wait:.1f}s")
         await asyncio.sleep(wait)
 
-    await channel.send(f"k!lu {card_name}")
+    await send_safe(channel, f"k!lu {card_name}", app)
     app._last_lu_time = time.time()
 
     def check(m):
@@ -310,7 +436,7 @@ async def _send_lu(app, client, channel, card_name):
             wait_secs  = int(secs_match.group(1)) + 1 if secs_match else LU_COOLDOWN_SECS
             app.ui_log(f"   ⏳ k!lu cooldown from Karuta — waiting {wait_secs}s")
             await asyncio.sleep(wait_secs)
-            await channel.send(f"k!lu {card_name}")
+            await send_safe(channel, f"k!lu {card_name}", app)
             app._last_lu_time = time.time()
             msg = await client.wait_for("message", check=check, timeout=15)
         return msg
@@ -364,8 +490,8 @@ async def lookup_wishes(app, client, channel, card_name):
         app.ui_log(f"   ♥ Wishlisted: {count}")
         return count
 
-    app.ui_log("   ♥ Wishlisted: 0")
-    return 0
+    app.ui_log("   ⚠ Could not parse wishlist count — treating as unknown")
+    return None
 
 
 # ─────────────────────────────────────────────
@@ -382,7 +508,7 @@ async def maybe_tag_burn(app, client, channel, card):
     app.ui_log(f"🔥 {card['name']} eligible for burn (#{card['print']}, "
                f"{card['wishes']} wishes) — tagging...")
 
-    await channel.send("k!tag burn")
+    await send_safe(channel, "k!tag burn", app)
 
     def check(m):
         return (m.channel.id == channel.id and m.author.id == KARUTA_ID)
@@ -390,9 +516,9 @@ async def maybe_tag_burn(app, client, channel, card):
         msg = await client.wait_for("message", check=check, timeout=10)
         if "does not exist" in msg.content.lower():
             app.ui_log("   📌 Creating 'burn' tag...")
-            await channel.send("k!tagcreate burn :fire:")
+            await send_safe(channel, "k!tagcreate burn :fire:", app)
             await asyncio.sleep(2)
-            await channel.send("k!tag burn")
+            await send_safe(channel, "k!tag burn", app)
             app.ui_log("   ✅ Tagged for burn.")
         else:
             app.ui_log("   ✅ Tagged for burn.")
@@ -475,7 +601,7 @@ async def _acquire_work_permit(app, client, channel):
 
     # ── Check inventory first ──
     app.ui_log("   💳 Checking inventory for work permit (k!i name=work)...")
-    await channel.send("k!i name=work")
+    await send_safe(channel, "k!i name=work", app)
     try:
         inv_msg = await client.wait_for("message", check=check, timeout=12)
         inv_text = inv_msg.content
@@ -485,7 +611,7 @@ async def _acquire_work_permit(app, client, channel):
         if "work permit" in inv_text.lower():
             app.ui_log("   💳 Work permit found in inventory — using it...")
             await asyncio.sleep(1)
-            await channel.send("k!use work permit")
+            await send_safe(channel, "k!use work permit", app)
             try:
                 use_msg = await client.wait_for("message", check=check, timeout=10)
                 await asyncio.sleep(1)
@@ -503,7 +629,7 @@ async def _acquire_work_permit(app, client, channel):
 
     # ── Buy permit ──
     await asyncio.sleep(1)
-    await channel.send("k!buy work permit")
+    await send_safe(channel, "k!buy work permit", app)
     try:
         buy_msg = await client.wait_for("message", check=check, timeout=10)
         if await _click_checkmark(app, buy_msg):
@@ -516,7 +642,7 @@ async def _acquire_work_permit(app, client, channel):
         return False
 
     # ── Use the permit just bought ──
-    await channel.send("k!use work permit")
+    await send_safe(channel, "k!use work permit", app)
     try:
         use_msg = await client.wait_for("message", check=check, timeout=10)
         await asyncio.sleep(1)
@@ -536,7 +662,7 @@ async def do_work(app, client, channel):
         return m.channel.id == channel.id and m.author.id == KARUTA_ID
 
     # ── Step 1: fetch top 5 by effort ──
-    await channel.send("k!c sort=effort")
+    await send_safe(channel, "k!c sort=effort", app)
     try:
         c_msg = await client.wait_for("message", check=check, timeout=12)
     except asyncio.TimeoutError:
@@ -556,7 +682,7 @@ async def do_work(app, client, channel):
     await asyncio.sleep(2)
 
     # ── Step 2: fetch current job board ──
-    await channel.send("k!jb")
+    await send_safe(channel, "k!jb", app)
     try:
         jb_msg = await client.wait_for("message", check=check, timeout=12)
     except asyncio.TimeoutError:
@@ -571,7 +697,7 @@ async def do_work(app, client, channel):
         for letter, new_card in zip("ABCDE", top5):
             cmd = f"k!jobworker {letter} {new_card['code']}"
             app.ui_log(f"   🔄 Slot {letter}: [empty] → [{new_card['name']}]  ({cmd})")
-            await channel.send(cmd)
+            await send_safe(channel, cmd, app)
             try:
                 await client.wait_for("message", check=check, timeout=10)
             except asyncio.TimeoutError:
@@ -595,7 +721,7 @@ async def do_work(app, client, channel):
             for (slot, old_name), new_card in zip(bad_slots, available):
                 cmd = f"k!jobworker {slot} {new_card['code']}"
                 app.ui_log(f"   🔄 {slot}: [{old_name}] → [{new_card['name']}]  ({cmd})")
-                await channel.send(cmd)
+                await send_safe(channel, cmd, app)
                 try:
                     await client.wait_for("message", check=check, timeout=10)
                 except asyncio.TimeoutError:
@@ -604,7 +730,7 @@ async def do_work(app, client, channel):
 
     # ── Step 4: k!nodes — find slot-2 node and assign all workers to it ──
     await asyncio.sleep(1)
-    await channel.send("k!nodes")
+    await send_safe(channel, "k!nodes", app)
     try:
         nodes_msg = await client.wait_for("message", check=check, timeout=12)
         nodes_desc = "".join(str(emb.description or "") for emb in nodes_msg.embeds)
@@ -621,7 +747,7 @@ async def do_work(app, client, channel):
         if node_name:
             cmd = f"k!jobnode a b c d e {node_name}"
             app.ui_log(f"   🌐 Assigning all workers to node '{node_name}' ({cmd})")
-            await channel.send(cmd)
+            await send_safe(channel, cmd, app)
             try:
                 await client.wait_for("message", check=check, timeout=10)
                 app.ui_log(f"   ✅ Workers assigned to '{node_name}'")
@@ -635,7 +761,7 @@ async def do_work(app, client, channel):
 
     # ── Step 5: run k!work ──
     await asyncio.sleep(1)
-    await channel.send("k!work")
+    await send_safe(channel, "k!work", app)
     try:
         work_msg = await client.wait_for("message", check=check, timeout=12)
         full_text = work_msg.content
@@ -646,7 +772,7 @@ async def do_work(app, client, channel):
             acquired = await _acquire_work_permit(app, client, channel)
             if acquired:
                 await asyncio.sleep(2)
-                await channel.send("k!work")
+                await send_safe(channel, "k!work", app)
                 try:
                     retry_msg = await client.wait_for("message", check=check, timeout=12)
                     await asyncio.sleep(1)
@@ -671,7 +797,7 @@ async def do_work(app, client, channel):
 # ─────────────────────────────────────────────
 async def do_daily(app, client, channel):
     app.ui_log("📅 Claiming daily...")
-    await channel.send("k!daily")
+    await send_safe(channel, "k!daily", app)
 
     def check_msg(m):
         return m.channel.id == channel.id and m.author.id == KARUTA_ID
@@ -737,9 +863,6 @@ async def do_daily(app, client, channel):
 
     except asyncio.TimeoutError:
         app.ui_log("   ⚠ Daily timed out")
-
-
-# Vote intentionally not automated — requires browser interaction
 
 
 # ─────────────────────────────────────────────
@@ -872,7 +995,7 @@ async def _fetch_affectionlist(app, client, channel):
     """Send k!affectionlist, handle pagination, return all parsed cards."""
     all_cards = []
 
-    await channel.send("k!affectionlist")
+    await send_safe(channel, "k!affectionlist", app)
     def check_al(m):
         return m.channel.id == channel.id and m.author.id == KARUTA_ID
 
@@ -914,7 +1037,7 @@ async def _fetch_affectionlist(app, client, channel):
 async def _fetch_tag_codes(app, client, channel, tag):
     """Send k!c tag=<tag>, paginate, return set of card codes found in the collection."""
     codes = set()
-    await channel.send(f"k!c tag={tag}")
+    await send_safe(channel, f"k!c tag={tag}", app)
 
     def check(m):
         return m.channel.id == channel.id and m.author.id == KARUTA_ID
@@ -1010,7 +1133,7 @@ def _rank_visit_cards(cards, tag_codes=None):
 
 async def _check_card_owned(app, client, channel, code):
     """Send k!c code=<id> and return True if the card exists in the collection, False if empty."""
-    await channel.send(f"k!c code={code}")
+    await send_safe(channel, f"k!c code={code}", app)
 
     def check(m):
         return m.channel.id == channel.id and m.author.id == KARUTA_ID
@@ -1090,7 +1213,7 @@ async def do_visit(app, client, channel):
                 app.ui_log("🏛 No owned eligible cards found — running k!visit with no code")
     cmd       = f"k!visit {card_code}" if card_code else "k!visit"
     app.ui_log(f"🏛 Visiting shrine... ({cmd})")
-    await channel.send(cmd)
+    await send_safe(channel, cmd, app)
 
     def check_msg(m):
         return m.channel.id == channel.id and m.author.id == KARUTA_ID
