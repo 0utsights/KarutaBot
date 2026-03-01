@@ -283,7 +283,13 @@ async def do_vote(app, client, channel):
 
 async def _do_vote_auto(app, client, channel):
     """Fully automatic vote — headless browser, zero user interaction."""
-    app.ui_log("🗳 [Auto] Vote is ready — starting headless vote...")
+    # Check if user wants visible browser for debugging
+    show_browser = getattr(app, "show_browser_var", None)
+    show_browser = show_browser.get() if show_browser else False
+    headless = not show_browser
+
+    app.ui_log("🗳 [Auto] Vote is ready — starting " +
+               ("visible" if show_browser else "headless") + " vote...")
 
     # Get the Discord token from the app panel
     token = getattr(app, "token_var", None)
@@ -303,7 +309,7 @@ async def _do_vote_auto(app, client, channel):
 
     try:
         success = await loop.run_in_executor(
-            None, lambda: auto_vote(token, ui_log=app.ui_log)
+            None, lambda: auto_vote(token, ui_log=app.ui_log, headless=headless)
         )
         if not success:
             app.ui_log("⚠ [Auto] Headless vote failed — falling back to semi")
