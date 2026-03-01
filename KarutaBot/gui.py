@@ -269,6 +269,17 @@ class AccountPanel:
                                  font=("Segoe UI", 9))
         vote_menu.grid(row=1, column=3, sticky="w", padx=(16, 0), pady=(2, 0), ipady=2)
 
+        # "Show Browser" checkbox — makes the vote browser visible for debugging
+        self.show_browser_var = tk.BooleanVar(value=self.data.get("show_browser", False))
+        show_cb = tk.Checkbutton(settings, text="Show Browser",
+                                 variable=self.show_browser_var,
+                                 bg=C["card2"], fg=C["muted"],
+                                 selectcolor=C["dark"],
+                                 activebackground=C["card2"],
+                                 activeforeground=C["text"],
+                                 font=("Segoe UI", 8))
+        show_cb.grid(row=1, column=4, sticky="w", padx=(8, 0), pady=(2, 0))
+
         # ── Button row ──
         _divider(self.frame, pady=6)
         btns = tk.Frame(self.frame, bg=C["card2"])
@@ -413,6 +424,7 @@ class AccountPanel:
             "jitter_min":      self.jitter_min_var.get(),
             "jitter_max":      self.jitter_max_var.get(),
             "vote_mode":       self.vote_mode_var.get(),
+            "show_browser":    self.show_browser_var.get(),
             "visit_card_code": self.visit_card_var.get().strip(),
             "visit_tag":       self.visit_tag_var.get().strip(),
             "enabled":         True,
