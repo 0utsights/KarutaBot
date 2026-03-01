@@ -247,6 +247,28 @@ class AccountPanel:
                    font=("Segoe UI", 10), buttonbackground=C["card"],
                    ).grid(row=1, column=2, sticky="w", padx=(12, 0), pady=(2, 0), ipady=4)
 
+        _tip_label(settings, "VOTE MODE",
+                   "Controls how k!vote is handled when the vote timer is ready.\n\n"
+                   "Auto — Fully automatic. Launches a headless browser behind "
+                   "the scenes, logs into top.gg via your Discord token, clicks "
+                   "the vote button, and handles the captcha. Zero interaction "
+                   "needed. Requires Chrome/Chromium installed.\n\n"
+                   "Semi — Opens the top.gg vote page in your default browser. "
+                   "You just click the captcha checkbox (~5 seconds).\n\n"
+                   "Off — Ignores voting entirely.",
+                   row=0, col=3, padx=16)
+        self.vote_mode_var = tk.StringVar(value=self.data.get("vote_mode", "auto"))
+        vote_menu = tk.OptionMenu(settings, self.vote_mode_var, "auto", "semi", "off")
+        vote_menu.config(bg=C["dark"], fg=C["text"], relief="flat",
+                         font=("Segoe UI", 9), activebackground=C["accent2"],
+                         activeforeground=C["dark"], highlightthickness=0,
+                         width=5, bd=0, padx=4)
+        vote_menu["menu"].config(bg=C["dark"], fg=C["text"],
+                                 activebackground=C["accent"],
+                                 activeforeground=C["dark"],
+                                 font=("Segoe UI", 9))
+        vote_menu.grid(row=1, column=3, sticky="w", padx=(16, 0), pady=(2, 0), ipady=2)
+
         # ── Button row ──
         _divider(self.frame, pady=6)
         btns = tk.Frame(self.frame, bg=C["card2"])
@@ -390,6 +412,7 @@ class AccountPanel:
             "max_drops":       self.max_drops_var.get(),
             "jitter_min":      self.jitter_min_var.get(),
             "jitter_max":      self.jitter_max_var.get(),
+            "vote_mode":       self.vote_mode_var.get(),
             "visit_card_code": self.visit_card_var.get().strip(),
             "visit_tag":       self.visit_tag_var.get().strip(),
             "enabled":         True,

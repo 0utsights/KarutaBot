@@ -3,3 +3,5 @@ requests
 flask
 python-dotenv
 pyinstaller
+undetected-chromedriver
+selenium

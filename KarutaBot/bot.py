@@ -193,7 +193,10 @@ async def automation_loop(app, client, channel_id):
             await asyncio.sleep(2)
 
             # ── Vote ──
-            if reminders.get("Vote") == 0:
+            vote_mode = getattr(app, "vote_mode_var", None)
+            vote_mode = vote_mode.get() if vote_mode else "semi"
+
+            if reminders.get("Vote") == 0 and vote_mode != "off":
                 await do_vote(app, client, channel)
                 await asyncio.sleep(2)
 
@@ -260,16 +263,59 @@ async def automation_loop(app, client, channel_id):
 
 
 # ─────────────────────────────────────────────
-#  Vote — opens top.gg in user's default browser
+#  Vote — automatic (headless browser) or semi-auto (browser open)
 # ─────────────────────────────────────────────
 async def do_vote(app, client, channel):
-    """Send k!vote, extract the vote URL, and open it in the user's browser.
+    """Handle vote automation based on vote_mode setting.
 
-    This is intentionally lightweight — no headless browser, no Selenium.
-    The user clicks the reCAPTCHA checkbox themselves (takes ~5 seconds).
-    Each user is on their own machine/IP, so no same-location concerns.
+    auto — Full headless pipeline via vote.py (zero interaction).
+    semi — Sends k!vote and opens the top.gg page for the user to click.
+    off  — Handled upstream in automation_loop (never calls this).
     """
-    app.ui_log("🗳 Vote is ready — sending k!vote...")
+    vote_mode = getattr(app, "vote_mode_var", None)
+    vote_mode = vote_mode.get() if vote_mode else "semi"
+
+    if vote_mode == "auto":
+        await _do_vote_auto(app, client, channel)
+    elif vote_mode == "semi":
+        await _do_vote_semi(app, client, channel)
+
+
+async def _do_vote_auto(app, client, channel):
+    """Fully automatic vote — headless browser, zero user interaction."""
+    app.ui_log("🗳 [Auto] Vote is ready — starting headless vote...")
+
+    # Get the Discord token from the app panel
+    token = getattr(app, "token_var", None)
+    token = token.get().strip() if token else None
+    if not token:
+        app.ui_log("❌ [Auto] No Discord token available — cannot auto-vote")
+        return
+
+    # Run the browser pipeline in a thread so we don't block the event loop.
+    # The browser takes ~20-40 seconds — the bot continues normally.
+    loop = asyncio.get_event_loop()
+    try:
+        from vote import auto_vote
+        success = await loop.run_in_executor(
+            None, lambda: auto_vote(token, ui_log=app.ui_log)
+        )
+        if not success:
+            app.ui_log("⚠ [Auto] Automatic vote failed — "
+                       "falling back to semi-auto")
+            await _do_vote_semi(app, client, channel)
+    except ImportError:
+        app.ui_log("⚠ [Auto] vote.py module not found — "
+                   "falling back to semi-auto")
+        await _do_vote_semi(app, client, channel)
+    except Exception as exc:
+        app.ui_log(f"⚠ [Auto] Vote error: {exc} — falling back to semi-auto")
+        await _do_vote_semi(app, client, channel)
+
+
+async def _do_vote_semi(app, client, channel):
+    """Semi-automatic vote — send k!vote and open the URL in user's browser."""
+    app.ui_log("🗳 [Semi] Vote is ready — sending k!vote...")
 
     msg_sent = await send_safe(channel, "k!vote", app)
     if not msg_sent:
@@ -284,7 +330,7 @@ async def do_vote(app, client, channel):
         app.ui_log("   ⚠ k!vote timed out")
         return
 
-    # Extract vote URL from Karuta's response (message content, embeds, buttons)
+    # Extract vote URL from Karuta's response
     vote_url = None
     all_text = msg.content or ""
     for embed in msg.embeds:
@@ -312,7 +358,7 @@ async def do_vote(app, client, channel):
 
     target_url = vote_url or "https://top.gg/bot/646937666251915264/vote"
     if not vote_url:
-        app.ui_log("   ⚠ Could not parse vote URL from response — using fallback")
+        app.ui_log("   ⚠ Could not parse vote URL — using fallback")
 
     app.ui_log(f"   🗳 Opening: {target_url}")
     try:

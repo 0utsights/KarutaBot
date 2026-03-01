@@ -51,6 +51,7 @@ def default_account():
         "max_drops":  MAX_DROPS_PER_DAY,
         "jitter_min":  DROP_JITTER_MIN,
         "jitter_max":  DROP_JITTER_MAX,
+        "vote_mode":  "auto",       # "auto" | "semi" | "off"
         "enabled":    True,
     }
 
