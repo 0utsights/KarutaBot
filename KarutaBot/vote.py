@@ -154,64 +154,198 @@ def _inject_discord_token(driver, token):
 
 
 def _navigate_to_vote(driver):
-    """Navigate to the top.gg vote page.
+    """Navigate to the top.gg vote page and ensure we're logged in.
 
-    If not logged into top.gg, this triggers the Discord OAuth flow.
-    Since we're already authenticated in Discord, the OAuth should
-    auto-approve and redirect back to the vote page.
+    Flow:
+      1. Go to top.gg vote page
+      2. Wait for any redirects (OAuth, login, etc.)
+      3. If we end up on Discord OAuth → click Authorize
+      4. If we end up on Discord login → wait for auto-login from token
+      5. Once back on top.gg → check for login button, click if needed
+      6. Ensure we're on the vote page
     """
+    from selenium.webdriver.common.by import By
+
     log.info(f"Navigating to vote page: {VOTE_URL}")
     driver.get(VOTE_URL)
-    time.sleep(OAUTH_FLOW_WAIT)
+    time.sleep(PAGE_LOAD_WAIT)
 
-    # top.gg may redirect through Discord OAuth. If we land on Discord's
-    # authorize page, we need to click "Authorize"
+    # ── Handle redirects — top.gg may bounce us through Discord OAuth ──
+    # We may need multiple passes since it can chain:
+    #   top.gg → discord login → discord oauth → top.gg
+    for attempt in range(3):
+        current = driver.current_url
+        log.info(f"[attempt {attempt+1}] URL: {current}")
+
+        if "discord.com/login" in current:
+            log.info("On Discord login page — waiting for token auto-login...")
+            time.sleep(PAGE_LOAD_WAIT + 4)
+            continue
+
+        if "discord.com/oauth2" in current:
+            log.info("On Discord OAuth page — clicking Authorize...")
+            _click_authorize(driver)
+            time.sleep(OAUTH_FLOW_WAIT)
+            continue
+
+        if "top.gg" in current:
+            # We're on top.gg — check if there's a visible login button
+            # that we need to click (meaning we're not logged in yet)
+            login_needed = _try_click_login_if_needed(driver)
+            if login_needed == "clicked":
+                log.info("Clicked login on top.gg — waiting for OAuth redirect...")
+                time.sleep(OAUTH_FLOW_WAIT)
+                continue  # will loop back to handle OAuth
+            elif login_needed == "logged_in":
+                log.info("Already logged into top.gg ✓")
+                break
+            else:
+                # Ambiguous — just proceed, the vote button check will tell us
+                log.info("Login status unclear — proceeding to vote button")
+                break
+
+    # ── Make sure we're on the vote page ──
     current = driver.current_url
-    log.info(f"Current URL after navigation: {current}")
+    if "top.gg" in current:
+        if "/vote" not in current:
+            log.info("On top.gg but not vote page — navigating...")
+            driver.get(VOTE_URL)
+            time.sleep(PAGE_LOAD_WAIT)
+        log.info(f"On vote page: {driver.current_url}")
+        return True
 
-    if "discord.com/oauth2/authorize" in current:
-        log.info("Hit Discord OAuth authorize page — clicking Authorize...")
+    log.warning(f"Unexpected URL after login flow: {current}")
+    return False
+
+
+def _try_click_login_if_needed(driver):
+    """Check if top.gg shows a login button and click it if so.
+
+    Returns:
+        'clicked'    — found and clicked a login button
+        'logged_in'  — no login button found, appears logged in
+        'unknown'    — can't tell
+    """
+    try:
+        result = driver.execute_script("""
+            // Search for visible login/sign-in buttons or links
+            let loginEls = [];
+            let all = document.querySelectorAll('a, button, [role="button"]');
+            for (let el of all) {
+                let text = (el.textContent || '').trim().toLowerCase();
+                let href = (el.getAttribute('href') || '').toLowerCase();
+                let r = el.getBoundingClientRect();
+                if (r.height < 5 || r.width < 5) continue;
+                if (getComputedStyle(el).display === 'none') continue;
+
+                // Only match elements whose DIRECT text is login-related
+                // (avoid matching large containers that happen to contain
+                //  the word "login" somewhere deep in their children)
+                let directText = '';
+                for (let n of el.childNodes) {
+                    if (n.nodeType === 3) directText += n.textContent;
+                }
+                directText = directText.trim().toLowerCase();
+
+                let isLogin = false;
+                if (directText === 'login' || directText === 'log in'
+                    || directText === 'sign in'
+                    || directText === 'login to vote'
+                    || directText === 'log in to vote'
+                    || directText === 'sign in to vote') {
+                    isLogin = true;
+                }
+                // href-based: only if it's a small nav element, not the whole page
+                if ((href.includes('/login') || href === '/api/auth/discord')
+                    && text.length < 30) {
+                    isLogin = true;
+                }
+
+                if (isLogin) {
+                    loginEls.push({
+                        tag: el.tagName, text: directText.substring(0, 40),
+                        href: href.substring(0, 60), h: r.height, w: r.width
+                    });
+                    // Click the first clear login button
+                    el.scrollIntoView({block: 'center'});
+                    el.click();
+                    return JSON.stringify({action: 'clicked',
+                        tag: el.tagName, text: directText.substring(0, 40)});
+                }
+            }
+            return JSON.stringify({action: 'no_login_found'});
+        """)
+
+        import json
+        data = json.loads(result)
+        if data["action"] == "clicked":
+            log.info(f"Clicked login: <{data['tag']}> text={data['text']!r}")
+            return "clicked"
+        else:
+            return "logged_in"
+
+    except Exception as exc:
+        log.warning(f"Login check error: {exc}")
+        return "unknown"
+
+
+def _click_authorize(driver):
+    """Click the Authorize button on Discord's OAuth page."""
+    from selenium.webdriver.common.by import By
+    from selenium.webdriver.support.ui import WebDriverWait
+    from selenium.webdriver.support import expected_conditions as EC
+
+    try:
+        # Wait for page to fully load
+        time.sleep(3)
+
+        # Try WebDriverWait for the authorize button
         try:
-            from selenium.webdriver.common.by import By
-            from selenium.webdriver.support.ui import WebDriverWait
-            from selenium.webdriver.support import expected_conditions as EC
-
             auth_btn = WebDriverWait(driver, 10).until(
                 EC.element_to_be_clickable((By.XPATH,
-                    "//button[contains(@class, 'authorize') or "
-                    "contains(text(), 'Authorize') or "
+                    "//button[contains(text(), 'Authorize') or "
                     "contains(text(), 'authorise') or "
+                    "contains(@class, 'authorize') or "
                     "@type='submit']"
                 ))
             )
             auth_btn.click()
-            log.info("Clicked Authorize")
-            time.sleep(OAUTH_FLOW_WAIT)
+            log.info("Clicked Authorize button via WebDriverWait")
+            return True
         except Exception as exc:
-            log.warning(f"Could not find/click Authorize button: {exc}")
-            # Try a JS approach as fallback
-            try:
-                driver.execute_script("""
-                    let btns = document.querySelectorAll('button');
-                    for (let b of btns) {
-                        if (b.textContent.toLowerCase().includes('authorize')) {
-                            b.click();
-                            break;
-                        }
-                    }
-                """)
-                time.sleep(OAUTH_FLOW_WAIT)
-            except Exception:
-                pass
+            log.info(f"WebDriverWait for Authorize failed: {exc}")
 
-    # Should now be on the vote page
-    current = driver.current_url
-    if "top.gg" in current:
-        log.info(f"On top.gg: {current}")
-        return True
+        # JS fallback — search all buttons
+        clicked = driver.execute_script("""
+            let btns = document.querySelectorAll('button, [role="button"], input[type="submit"]');
+            for (let b of btns) {
+                let text = (b.textContent || '').trim().toLowerCase();
+                if (text.includes('authorize') || text.includes('authorise')
+                    || text.includes('allow') || text.includes('accept')) {
+                    b.scrollIntoView({block: 'center'});
+                    b.click();
+                    return 'clicked: ' + b.tagName + ' text=' + text;
+                }
+            }
+            // Also try submit buttons
+            let submits = document.querySelectorAll('button[type="submit"], input[type="submit"]');
+            for (let s of submits) {
+                s.click();
+                return 'clicked submit: ' + s.tagName;
+            }
+            return false;
+        """)
 
-    log.warning(f"Unexpected URL after OAuth flow: {current}")
-    return False
+        if clicked:
+            log.info(f"Clicked Authorize via JS: {clicked}")
+            return True
+
+        log.warning("Could not find Authorize button")
+        return False
+
+    except Exception as exc:
+        log.warning(f"Authorize click error: {exc}")
+        return False
 
 
 def _dump_page_debug(driver, label="debug"):
@@ -278,8 +412,13 @@ def _click_vote_button(driver):
         if result == "already_voted":
             log.info("Page says already voted — nothing to click")
             return True
+        if result == "ad_playing":
+            log.info(f"Ad countdown active — waiting ({elapsed}s / {MAX_POLL}s)...")
+            elapsed += POLL_INTERVAL
+            time.sleep(POLL_INTERVAL)
+            continue
 
-        # Log what we see so far (first and last attempt only to avoid spam)
+        # Log what we see (first and last attempt only to avoid spam)
         if elapsed == 0 or elapsed + POLL_INTERVAL >= MAX_POLL:
             _log_visible_elements(driver, f"poll_t{elapsed}")
 
@@ -339,9 +478,11 @@ def _try_find_and_click_vote(driver):
     Returns:
         'clicked'        — successfully clicked the vote button
         'already_voted'  — page indicates we already voted
+        'ad_playing'     — ad countdown is visible, vote button not ready
         None             — button not found / not yet ready
     """
     from selenium.webdriver.common.by import By
+    from selenium.webdriver.common.action_chains import ActionChains
 
     page_text = (driver.page_source or "").lower()
 
@@ -354,13 +495,19 @@ def _try_find_and_click_vote(driver):
         if phrase in page_text:
             return "already_voted"
 
-    # ── Strategy A: JavaScript comprehensive search ──
-    # This is the most reliable approach for React SPAs — searches the
-    # live DOM for any element whose text content is exactly "Vote" (or
-    # very close) and that is currently visible + enabled.
+    # Check if ad is still playing — "you will be able to vote after this ad"
+    if "after this ad" in page_text or "vote after this" in page_text:
+        log.info("Ad is still playing — waiting for it to finish...")
+        return "ad_playing"
+
+    # Check if vote button should be visible — "you can vote now"
+    vote_ready = "you can vote now" in page_text
+    if vote_ready:
+        log.info("Page says 'You can vote now!' — looking for Vote button...")
+
+    # ── Use JS to find the button, get its info ──
     try:
         result = driver.execute_script("""
-            // Helper: get only the DIRECT text of an element (not children)
             function directText(el) {
                 let t = '';
                 for (let n of el.childNodes) {
@@ -369,7 +516,6 @@ def _try_find_and_click_vote(driver):
                 return t.trim();
             }
 
-            // Collect candidates: any element whose text looks like "vote"
             let candidates = [];
             let all = document.querySelectorAll('*');
             for (let el of all) {
@@ -380,98 +526,166 @@ def _try_find_and_click_vote(driver):
                 let tag = el.tagName;
                 let rect = el.getBoundingClientRect();
 
-                // Skip tiny/invisible elements
                 if (rect.height < 10 || rect.width < 30) continue;
                 if (getComputedStyle(el).display === 'none') continue;
                 if (getComputedStyle(el).visibility === 'hidden') continue;
                 if (getComputedStyle(el).opacity === '0') continue;
 
-                // Skip if text says "voted" "unvote" etc
+                // Skip elements that say "voted", "unvote", etc
                 if (dt.includes('voted') || dt.includes('unvote')) continue;
                 if (ft === 'voted' || ft.includes('already voted')) continue;
 
+                // IMPORTANT: Only match elements whose DIRECT text is exactly "Vote"
+                // This avoids matching parent containers like the bar that says
+                // "You can vote now!  Vote" (whose full text includes "vote" but
+                // is really a container, not the button itself)
                 let isVote = false;
+                if (dt === 'vote' || dt === 'Vote') isVote = true;
 
-                // Direct text match (best signal)
-                if (dt === 'vote') isVote = true;
-                // Full text is just "vote" (button with only that word)
-                if (ft === 'vote') isVote = true;
-                // Class-based match
-                if (cls.match(/\\bvote\\b/) && !cls.includes('voted')
-                    && !cls.includes('unvote')) isVote = true;
-                // data-* attribute match
-                let dtest = el.getAttribute('data-testid') || '';
-                let dcy   = el.getAttribute('data-cy') || '';
-                if (dtest.includes('vote') || dcy.includes('vote')) isVote = true;
-                // aria-label match
-                let aria = (el.getAttribute('aria-label') || '').toLowerCase();
-                if (aria === 'vote' || aria === 'vote for this bot') isVote = true;
+                // Also match by class/data attrs (but only small elements)
+                if (!isVote && ft === 'vote') isVote = true;
+                if (!isVote) {
+                    let dtest = el.getAttribute('data-testid') || '';
+                    let aria = (el.getAttribute('aria-label') || '').toLowerCase();
+                    if (dtest === 'vote-button') isVote = true;
+                    if (aria === 'vote' || aria === 'vote for this bot') isVote = true;
+                }
 
                 if (!isVote) continue;
 
-                // Score: prefer buttons/links, larger elements, enabled elements
                 let score = 0;
                 if (tag === 'BUTTON') score += 10;
                 if (tag === 'A')      score += 8;
                 if (el.getAttribute('role') === 'button') score += 7;
-                if (dt === 'vote')     score += 5;   // exact direct text
+                if (tag === 'SPAN' || tag === 'DIV') score += 2;
+                if (dt === 'Vote' || dt === 'vote') score += 5;
                 if (!el.disabled && el.getAttribute('aria-disabled') !== 'true') score += 3;
-                score += Math.min(rect.height, 100) / 20;  // bigger = better
+                // Prefer the pink/red button-sized element (from screenshot: ~80px wide, ~35px tall)
+                if (rect.width > 50 && rect.width < 200 && rect.height > 20 && rect.height < 80) {
+                    score += 4;  // looks like a button shape
+                }
+                score += Math.min(rect.height, 100) / 20;
 
-                candidates.push({el: el, score: score, tag: tag,
-                                 text: ft.substring(0, 40),
-                                 dis: el.disabled || el.getAttribute('aria-disabled') === 'true'});
-            }
+                let bg = getComputedStyle(el).backgroundColor;
 
-            if (candidates.length === 0) return JSON.stringify({found: false});
-
-            // Sort by score descending
-            candidates.sort((a, b) => b.score - a.score);
-
-            let best = candidates[0];
-
-            // If the best candidate is disabled, report it but don't click
-            if (best.dis) {
-                return JSON.stringify({
-                    found: true, disabled: true,
-                    tag: best.tag, text: best.text,
-                    count: candidates.length
+                candidates.push({
+                    score: score, tag: tag,
+                    text: dt.substring(0, 40),
+                    fulltext: ft.substring(0, 60),
+                    dis: el.disabled || el.getAttribute('aria-disabled') === 'true',
+                    cx: rect.x + rect.width / 2,
+                    cy: rect.y + rect.height / 2,
+                    w: rect.width, h: rect.height,
+                    cls: cls.substring(0, 80),
+                    bg: bg
                 });
             }
 
-            // Click it!
-            best.el.scrollIntoView({block: 'center'});
-            best.el.click();
+            if (candidates.length === 0) return JSON.stringify({found: false});
+            candidates.sort((a, b) => b.score - a.score);
+
+            // Return ALL candidates for debugging
             return JSON.stringify({
-                found: true, clicked: true,
-                tag: best.tag, text: best.text,
-                count: candidates.length
+                found: true,
+                best: candidates[0],
+                all: candidates.slice(0, 5)
             });
         """)
 
         if result:
             import json
             data = json.loads(result)
-            if data.get("clicked"):
-                log.info(f"Clicked vote button: <{data['tag']}> text={data['text']!r}")
-                return "clicked"
-            if data.get("found") and data.get("disabled"):
-                log.info(f"Found vote button but DISABLED (ad still playing?): "
-                         f"<{data['tag']}> text={data['text']!r}")
-                return None  # will retry
+
             if not data.get("found"):
-                return None  # not found yet, will retry
+                if vote_ready:
+                    log.warning("Page says 'vote now' but no vote button found in DOM!")
+                return None
+
+            # Log all candidates for debugging
+            for i, c in enumerate(data.get("all", [])):
+                log.info(f"  candidate[{i}]: <{c['tag']}> direct={c['text']!r} "
+                         f"full={c['fulltext']!r} score={c['score']} "
+                         f"size={c['w']:.0f}x{c['h']:.0f} "
+                         f"pos=({c['cx']:.0f},{c['cy']:.0f}) "
+                         f"cls={c['cls']!r} bg={c['bg']!r} dis={c['dis']}")
+
+            best = data["best"]
+
+            if best["dis"]:
+                log.info("Best candidate is disabled — will retry")
+                return None
+
+            # Now click it with Selenium ActionChains
+            try:
+                vote_el = driver.execute_script(
+                    "return document.elementFromPoint(arguments[0], arguments[1]);",
+                    best["cx"], best["cy"]
+                )
+                if vote_el:
+                    # Log what elementFromPoint actually returned
+                    actual_tag = driver.execute_script("return arguments[0].tagName;", vote_el)
+                    actual_text = driver.execute_script(
+                        "return (arguments[0].textContent || '').trim().substring(0, 40);", vote_el)
+                    log.info(f"elementFromPoint returned: <{actual_tag}> text={actual_text!r}")
+
+                    driver.execute_script(
+                        "arguments[0].scrollIntoView({block: 'center'});", vote_el)
+                    time.sleep(0.5)
+
+                    actions = ActionChains(driver)
+                    actions.move_to_element(vote_el)
+                    actions.pause(0.3)
+                    actions.click()
+                    actions.perform()
+
+                    log.info(f"ActionChains click performed at ({best['cx']:.0f}, {best['cy']:.0f})")
+
+                    # Wait and check if the page changed
+                    time.sleep(3)
+                    new_text = (driver.page_source or "").lower()
+
+                    # Did "you can vote now" disappear? That means click worked
+                    if "you can vote now" in page_text and "you can vote now" not in new_text:
+                        log.info("'You can vote now' disappeared — vote click registered!")
+                    # Did a success message appear?
+                    for phrase in ["you have voted", "thanks for voting", "come back in",
+                                   "next vote in"]:
+                        if phrase in new_text and phrase not in page_text:
+                            log.info(f"Success phrase appeared after click: '{phrase}'")
+
+                    return "clicked"
+
+            except Exception as exc:
+                log.warning(f"ActionChains click failed: {exc}")
+
+            # Fallback: dispatchEvent
+            try:
+                driver.execute_script("""
+                    let el = document.elementFromPoint(arguments[0], arguments[1]);
+                    if (el) {
+                        el.scrollIntoView({block: 'center'});
+                        ['pointerdown', 'mousedown', 'pointerup', 'mouseup', 'click'].forEach(evt => {
+                            el.dispatchEvent(new MouseEvent(evt, {
+                                bubbles: true, cancelable: true,
+                                view: window, button: 0
+                            }));
+                        });
+                    }
+                """, best["cx"], best["cy"])
+                log.info("Fallback: dispatchEvent click performed")
+                time.sleep(3)
+                return "clicked"
+            except Exception as exc:
+                log.warning(f"dispatchEvent fallback failed: {exc}")
+
     except Exception as exc:
         log.warning(f"JS vote search error: {exc}")
 
-    # ── Strategy B: Selenium selectors as fallback ──
+    # ── Strategy B: Direct Selenium xpath selectors ──
     xpath_selectors = [
-        "//button[translate(normalize-space(text()),'VOTE','vote')='vote']",
-        "//a[translate(normalize-space(text()),'VOTE','vote')='vote']",
-        "//*[@role='button'][translate(normalize-space(text()),'VOTE','vote')='vote']",
-        "//button[contains(@class,'vote') or contains(@class,'Vote')]",
-        "//a[contains(@class,'vote') or contains(@class,'Vote')]",
-        "//*[@data-testid='vote-button']",
+        "//button[normalize-space(text())='Vote']",
+        "//a[normalize-space(text())='Vote']",
+        "//*[@role='button'][normalize-space(text())='Vote']",
     ]
     for sel in xpath_selectors:
         try:
@@ -482,18 +696,20 @@ def _try_find_and_click_vote(driver):
                         continue
                     if btn.size.get("height", 0) < 10:
                         continue
-                    txt = (btn.text or "").strip().lower()
-                    if "voted" in txt and txt != "vote":
+                    txt = (btn.text or "").strip()
+                    if txt.lower() != "vote":
                         continue
                     if btn.get_attribute("disabled") or \
                        btn.get_attribute("aria-disabled") == "true":
-                        log.info(f"Found disabled vote button via xpath: {sel}")
-                        return None  # retry later
-                    log.info(f"Clicking vote button via xpath: {sel} text={btn.text!r}")
+                        return None
+
+                    log.info(f"Clicking via Selenium xpath: {sel} text={txt!r} "
+                             f"size={btn.size}")
                     driver.execute_script(
                         "arguments[0].scrollIntoView({block:'center'});", btn)
                     time.sleep(0.3)
-                    btn.click()
+                    ActionChains(driver).move_to_element(btn).pause(0.3).click().perform()
+                    time.sleep(3)
                     return "clicked"
                 except Exception:
                     continue
@@ -616,12 +832,19 @@ def _check_success(driver):
     time.sleep(SUCCESS_WAIT)
 
     page_text = driver.page_source.lower()
+
+    # FIRST: check if we're even logged in — if not, it's definitely not a success
+    not_logged_signs = ["login to vote", "log in to vote", "sign in to vote",
+                        "please login", "please log in"]
+    for sign in not_logged_signs:
+        if sign in page_text:
+            log.warning(f"Not logged in — found '{sign}' — vote did NOT succeed")
+            return False
+
     success_indicators = [
         "you have voted",
         "thanks for voting",
         "successfully voted",
-        "already voted",
-        "voted!",
         "come back in",
         "next vote in",
         "vote again in",
@@ -632,14 +855,32 @@ def _check_success(driver):
             log.info(f"Vote success confirmed: found '{indicator}'")
             return True
 
-    # Also check if the button changed to a "voted" state
+    # Check if the button changed to a "voted" / disabled state
     try:
         from selenium.webdriver.common.by import By
-        voted_elements = driver.find_elements(By.XPATH,
-            "//*[contains(translate(text(), 'VOTED', 'voted'), 'voted')]"
-        )
-        if voted_elements:
-            log.info("Vote success confirmed: found 'voted' element")
+        # Look for elements whose DIRECT visible text is "voted" (not just
+        # the word appearing somewhere in a large container's text)
+        result = driver.execute_script("""
+            let found = [];
+            let all = document.querySelectorAll('button, a, [role="button"], span, div');
+            for (let el of all) {
+                let direct = '';
+                for (let n of el.childNodes) {
+                    if (n.nodeType === 3) direct += n.textContent;
+                }
+                direct = direct.trim().toLowerCase();
+                if (direct === 'voted' || direct === 'voted!' ||
+                    direct === 'already voted') {
+                    let r = el.getBoundingClientRect();
+                    if (r.height > 5 && r.width > 5) {
+                        found.push(el.tagName + ': ' + direct);
+                    }
+                }
+            }
+            return found;
+        """)
+        if result and len(result) > 0:
+            log.info(f"Vote success confirmed: found voted elements: {result}")
             return True
     except Exception:
         pass
@@ -693,12 +934,14 @@ def auto_vote(token, ui_log=None, headless=True):
             _log("❌ [Auto] Discord login failed — token may be invalid")
             return False
 
-        # Step 2: Navigate to top.gg vote page (triggers OAuth)
-        _log("🗳 [Auto] Navigating to top.gg vote page...")
-        if not _navigate_to_vote(driver):
-            _log("⚠ [Auto] Could not reach vote page — trying direct URL...")
+        # Step 2: Navigate to top.gg vote page and log in via OAuth
+        _log("🗳 [Auto] Navigating to top.gg + logging in...")
+        nav_ok = _navigate_to_vote(driver)
+        if not nav_ok:
+            _log("⚠ [Auto] Navigation uncertain — trying vote page directly...")
             driver.get(VOTE_URL)
             time.sleep(PAGE_LOAD_WAIT)
+        # Either way, proceed to try clicking the vote button
 
         # Step 3: Click the vote button (waits for ad to finish, up to ~45s)
         _log("🗳 [Auto] Waiting for ad + clicking vote button...")
@@ -707,15 +950,24 @@ def auto_vote(token, ui_log=None, headless=True):
             _log("   Check the vote_debug/ folder next to the .exe for screenshots")
             return False
 
+        # Step 3b: Wait and verify the click registered
+        # After clicking Vote, top.gg may show a captcha, a confirmation,
+        # or the button may change to "Voted". Give it time.
+        _log("🗳 [Auto] Vote button clicked — waiting for response...")
+        time.sleep(4)
+
+        # Take a debug snapshot after clicking
+        _dump_page_debug(driver, "post_vote_click")
+
         # Step 4: Handle captcha if present
-        time.sleep(2)
-        _log("🗳 [Auto] Handling captcha...")
+        _log("🗳 [Auto] Checking for captcha...")
         captcha_ok = _handle_captcha(driver)
         if not captcha_ok:
             _log("⚠ [Auto] Captcha challenge may require manual intervention")
             # Don't return False — it may still have worked
 
-        # Step 5: Check for success
+        # Step 5: Check for success (wait a bit more for the page to update)
+        time.sleep(3)
         success = _check_success(driver)
         if success:
             _log("✅ [Auto] Vote completed successfully!")
