@@ -484,7 +484,28 @@ def _try_find_and_click_vote(driver):
     from selenium.webdriver.common.by import By
     from selenium.webdriver.common.action_chains import ActionChains
 
-    page_text = (driver.page_source or "").lower()
+    # Check page state using VISIBLE text only (page_source contains JS bundles
+    # with strings like 'login to vote' that cause false matches)
+    try:
+        page_state = driver.execute_script("""
+            let texts = [];
+            let els = document.querySelectorAll('h1, h2, h3, h4, h5, p, span, div');
+            for (let el of els) {
+                let r = el.getBoundingClientRect();
+                if (r.height < 5) continue;
+                if (getComputedStyle(el).display === 'none') continue;
+                if (getComputedStyle(el).visibility === 'hidden') continue;
+                let t = '';
+                for (let n of el.childNodes) {
+                    if (n.nodeType === 3) t += n.textContent;
+                }
+                t = t.trim().toLowerCase();
+                if (t.length > 3 && t.length < 200) texts.push(t);
+            }
+            return texts.join(' | ');
+        """) or ""
+    except Exception:
+        page_state = ""
 
     # Check if we already voted
     already_voted_phrases = [
@@ -492,16 +513,16 @@ def _try_find_and_click_vote(driver):
         "next vote in", "vote again in", "thanks for voting",
     ]
     for phrase in already_voted_phrases:
-        if phrase in page_text:
+        if phrase in page_state:
             return "already_voted"
 
-    # Check if ad is still playing — "you will be able to vote after this ad"
-    if "after this ad" in page_text or "vote after this" in page_text:
+    # Check if ad is still playing — "You will be able to vote after this ad"
+    if "after this ad" in page_state or "vote after this" in page_state:
         log.info("Ad is still playing — waiting for it to finish...")
         return "ad_playing"
 
-    # Check if vote button should be visible — "you can vote now"
-    vote_ready = "you can vote now" in page_text
+    # Check if vote button should be visible — "You can vote now!"
+    vote_ready = "you can vote now" in page_state
     if vote_ready:
         log.info("Page says 'You can vote now!' — looking for Vote button...")
 
@@ -645,12 +666,12 @@ def _try_find_and_click_vote(driver):
                     new_text = (driver.page_source or "").lower()
 
                     # Did "you can vote now" disappear? That means click worked
-                    if "you can vote now" in page_text and "you can vote now" not in new_text:
+                    if "you can vote now" in page_state and "you can vote now" not in new_text:
                         log.info("'You can vote now' disappeared — vote click registered!")
                     # Did a success message appear?
                     for phrase in ["you have voted", "thanks for voting", "come back in",
                                    "next vote in"]:
-                        if phrase in new_text and phrase not in page_text:
+                        if phrase in new_text and phrase not in page_state:
                             log.info(f"Success phrase appeared after click: '{phrase}'")
 
                     return "clicked"
@@ -831,16 +852,35 @@ def _check_success(driver):
     """Check if the vote was successful by looking for confirmation indicators."""
     time.sleep(SUCCESS_WAIT)
 
-    page_text = driver.page_source.lower()
+    # Use JS to get only VISIBLE text on the page — not hidden elements,
+    # script tags, or React bundles that might contain false matches
+    try:
+        visible_text = driver.execute_script("""
+            // Get visible text from the vote area, not the entire page
+            // (the page source contains JS bundles with strings like 'login to vote')
+            let texts = [];
+            let els = document.querySelectorAll('h1, h2, h3, h4, h5, p, span, div, button, a');
+            for (let el of els) {
+                let r = el.getBoundingClientRect();
+                if (r.height < 5 || r.width < 5) continue;
+                if (getComputedStyle(el).display === 'none') continue;
+                if (getComputedStyle(el).visibility === 'hidden') continue;
+                // Get direct text only (not children)
+                let t = '';
+                for (let n of el.childNodes) {
+                    if (n.nodeType === 3) t += n.textContent;
+                }
+                t = t.trim();
+                if (t.length > 0 && t.length < 200) texts.push(t.toLowerCase());
+            }
+            return texts.join(' | ');
+        """) or ""
+    except Exception:
+        visible_text = ""
 
-    # FIRST: check if we're even logged in — if not, it's definitely not a success
-    not_logged_signs = ["login to vote", "log in to vote", "sign in to vote",
-                        "please login", "please log in"]
-    for sign in not_logged_signs:
-        if sign in page_text:
-            log.warning(f"Not logged in — found '{sign}' — vote did NOT succeed")
-            return False
+    log.info(f"Visible page text (first 500 chars): {visible_text[:500]}")
 
+    # Check for success indicators in VISIBLE text only
     success_indicators = [
         "you have voted",
         "thanks for voting",
@@ -851,15 +891,18 @@ def _check_success(driver):
     ]
 
     for indicator in success_indicators:
-        if indicator in page_text:
-            log.info(f"Vote success confirmed: found '{indicator}'")
+        if indicator in visible_text:
+            log.info(f"Vote success confirmed: found '{indicator}' in visible text")
             return True
 
-    # Check if the button changed to a "voted" / disabled state
+    # Check if "you can vote now" is still showing — means vote didn't work
+    if "you can vote now" in visible_text:
+        log.warning("'You can vote now' still visible — vote did NOT register")
+        return False
+
+    # Check if the vote button changed to "voted" state
     try:
         from selenium.webdriver.common.by import By
-        # Look for elements whose DIRECT visible text is "voted" (not just
-        # the word appearing somewhere in a large container's text)
         result = driver.execute_script("""
             let found = [];
             let all = document.querySelectorAll('button, a, [role="button"], span, div');
