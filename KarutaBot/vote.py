@@ -770,82 +770,242 @@ _JS_BRUTE_FORCE_VOTE = """
 
 
 def _handle_captcha(driver):
-    """Attempt to solve the reCAPTCHA checkbox if it appears.
+    """Handle Cloudflare Turnstile captcha if it appears.
 
-    With undetected-chromedriver, the reCAPTCHA v2 checkbox typically
-    auto-passes on click (no image challenges). The user confirmed that
-    it's a standard checkbox that sometimes doesn't even appear.
+    Top.gg uses Cloudflare Turnstile ("Verify you are human" checkbox).
+    It lives inside an iframe. With undetected-chromedriver, clicking the
+    checkbox usually auto-passes without image challenges.
 
     Returns True if captcha was handled or wasn't present.
     """
     from selenium.webdriver.common.by import By
     from selenium.webdriver.common.action_chains import ActionChains
 
-    log.info("Checking for reCAPTCHA...")
+    log.info("Checking for captcha...")
     time.sleep(2)
 
-    # reCAPTCHA lives inside an iframe — we need to switch into it
+    # ── Check if captcha is even present ──
+    # Look for "solve the captcha" or "verify you are human" in visible text
+    try:
+        has_captcha = driver.execute_script("""
+            let els = document.querySelectorAll('h1, h2, h3, h4, h5, p, span, div');
+            for (let el of els) {
+                let r = el.getBoundingClientRect();
+                if (r.height < 5) continue;
+                if (getComputedStyle(el).display === 'none') continue;
+                let t = (el.textContent || '').toLowerCase();
+                if (t.includes('solve the captcha') || t.includes('verify you are human')
+                    || t.includes('captcha to continue')) {
+                    return true;
+                }
+            }
+            return false;
+        """)
+        if not has_captcha:
+            log.info("No captcha text found on page — captcha not present (good!)")
+            return True
+    except Exception:
+        pass
+
+    log.info("Captcha detected — looking for Cloudflare Turnstile iframe...")
+
+    # ── Find the Turnstile iframe ──
+    # Cloudflare Turnstile uses an iframe with src containing "challenges.cloudflare.com"
+    # or with title containing "Cloudflare" or "Turnstile"
+    captcha_frame = None
     try:
         iframes = driver.find_elements(By.TAG_NAME, "iframe")
-        captcha_frame = None
+        log.info(f"Found {len(iframes)} iframes on page")
         for iframe in iframes:
             src = iframe.get_attribute("src") or ""
             title = iframe.get_attribute("title") or ""
+            name = iframe.get_attribute("name") or ""
+            w = iframe.size.get("width", 0)
+            h = iframe.size.get("height", 0)
+            log.info(f"  iframe: src={src[:100]!r} title={title!r} "
+                     f"name={name[:50]!r} size={w}x{h}")
+
+            if ("challenges.cloudflare.com" in src or
+                "turnstile" in src.lower() or
+                "cloudflare" in title.lower() or
+                "turnstile" in title.lower() or
+                "cf-turnstile" in name.lower()):
+                captcha_frame = iframe
+                log.info("  → This is the Turnstile iframe!")
+                break
+
+            # Also check for reCAPTCHA as fallback
             if "recaptcha" in src.lower() or "recaptcha" in title.lower():
                 captcha_frame = iframe
+                log.info("  → This is a reCAPTCHA iframe!")
                 break
 
         if not captcha_frame:
-            log.info("No reCAPTCHA iframe found — captcha not present (good!)")
-            return True
-
-        log.info("Found reCAPTCHA iframe — switching into it...")
-        driver.switch_to.frame(captcha_frame)
-
-        # Find and click the checkbox
-        checkbox = driver.find_element(By.ID, "recaptcha-anchor")
-        if checkbox:
-            # Human-like: move to element with slight offset, pause, then click
-            actions = ActionChains(driver)
-            actions.move_to_element(checkbox)
-            actions.pause(0.3 + (time.time() % 1) * 0.4)  # slight random delay
-            actions.click()
-            actions.perform()
-            log.info("Clicked reCAPTCHA checkbox")
-
-        # Switch back to main content
-        driver.switch_to.default_content()
-        time.sleep(CAPTCHA_WAIT)
-
-        # Check if captcha was solved (the checkmark appears)
-        try:
-            driver.switch_to.frame(captcha_frame)
-            anchor = driver.find_element(By.ID, "recaptcha-anchor")
-            classes = anchor.get_attribute("class") or ""
-            checked = "recaptcha-checkbox-checked" in classes
-            driver.switch_to.default_content()
-
-            if checked:
-                log.info("reCAPTCHA solved successfully!")
-                return True
-            else:
-                log.warning("reCAPTCHA checkbox clicked but not checked — "
-                           "may have triggered image challenge")
-                driver.switch_to.default_content()
-                return False
-        except Exception:
-            driver.switch_to.default_content()
-            # If we can't verify, assume it worked
-            log.info("Could not verify captcha state — proceeding")
-            return True
+            # Sometimes the iframe doesn't have an obvious src/title.
+            # Look for any small iframe that could be a captcha checkbox
+            for iframe in iframes:
+                w = iframe.size.get("width", 0)
+                h = iframe.size.get("height", 0)
+                if 200 < w < 400 and 50 < h < 100 and iframe.is_displayed():
+                    captcha_frame = iframe
+                    log.info(f"  → Likely captcha iframe by size: {w}x{h}")
+                    break
 
     except Exception as exc:
-        log.warning(f"Captcha handling error: {exc}")
+        log.warning(f"Error finding iframes: {exc}")
+
+    if not captcha_frame:
+        log.info("No captcha iframe found — trying direct checkbox click...")
+        # Try clicking the checkbox without iframe switching
+        return _try_direct_captcha_click(driver)
+
+    # ── Click inside the Turnstile iframe ──
+    try:
+        log.info("Switching to captcha iframe...")
+        driver.switch_to.frame(captcha_frame)
+        time.sleep(1)
+
+        # Turnstile has a checkbox/label element inside
+        # Try to find and click it
+        checkbox = None
+
+        # Strategy 1: Find by common Turnstile selectors
+        selectors = [
+            "input[type='checkbox']",
+            "#cf-turnstile-response",
+            "[class*='checkbox']",
+            "label",
+            "[role='checkbox']",
+        ]
+        for sel in selectors:
+            try:
+                elements = driver.find_elements(By.CSS_SELECTOR, sel)
+                for el in elements:
+                    if el.is_displayed():
+                        checkbox = el
+                        log.info(f"Found captcha checkbox via: {sel}")
+                        break
+            except Exception:
+                continue
+            if checkbox:
+                break
+
+        # Strategy 2: Click the body of the iframe (Turnstile often
+        # just needs a click anywhere inside the iframe)
+        if not checkbox:
+            try:
+                body = driver.find_element(By.TAG_NAME, "body")
+                if body:
+                    checkbox = body
+                    log.info("Using iframe body as click target")
+            except Exception:
+                pass
+
+        if checkbox:
+            # Human-like click with slight delay
+            actions = ActionChains(driver)
+            actions.move_to_element(checkbox)
+            actions.pause(0.3 + (time.time() % 1) * 0.3)
+            actions.click()
+            actions.perform()
+            log.info("Clicked captcha checkbox")
+
+        driver.switch_to.default_content()
+
+    except Exception as exc:
+        log.warning(f"Error clicking in captcha iframe: {exc}")
         try:
             driver.switch_to.default_content()
         except Exception:
             pass
-        return True  # proceed anyway — captcha may not have been required
+
+    # ── Wait for captcha to resolve ──
+    log.info("Waiting for captcha to resolve...")
+    time.sleep(CAPTCHA_WAIT)
+
+    # ── Verify captcha was solved ──
+    try:
+        # Check if the captcha text is gone from the visible page
+        still_captcha = driver.execute_script("""
+            let els = document.querySelectorAll('h1, h2, h3, h4, h5, p, span, div');
+            for (let el of els) {
+                let r = el.getBoundingClientRect();
+                if (r.height < 5) continue;
+                if (getComputedStyle(el).display === 'none') continue;
+                let t = (el.textContent || '').toLowerCase();
+                if (t.includes('solve the captcha') || t.includes('verify you are human')
+                    || t.includes('captcha to continue')) {
+                    return true;
+                }
+            }
+            return false;
+        """)
+        if not still_captcha:
+            log.info("Captcha text gone — captcha solved!")
+            return True
+        else:
+            log.warning("Captcha text still present — may not have been solved")
+            return False
+    except Exception:
+        log.info("Could not verify captcha state — proceeding")
+        return True
+
+
+def _try_direct_captcha_click(driver):
+    """Try clicking the captcha checkbox without iframe switching.
+
+    Sometimes Turnstile renders in a shadow DOM or in a way that doesn't
+    require iframe switching. This tries clicking the visible checkbox directly.
+    """
+    from selenium.webdriver.common.by import By
+    from selenium.webdriver.common.action_chains import ActionChains
+
+    try:
+        result = driver.execute_script("""
+            // Look for Turnstile widget container
+            let containers = document.querySelectorAll(
+                '[class*="turnstile" i], [class*="cf-turnstile" i], ' +
+                '[id*="turnstile" i], [data-sitekey]'
+            );
+            for (let c of containers) {
+                let r = c.getBoundingClientRect();
+                if (r.height > 10 && r.width > 10) {
+                    return JSON.stringify({
+                        found: true, x: r.x + r.width/2, y: r.y + r.height/2,
+                        w: r.width, h: r.height,
+                        tag: c.tagName, cls: (c.className || '').substring(0, 60)
+                    });
+                }
+            }
+            return JSON.stringify({found: false});
+        """)
+
+        import json
+        data = json.loads(result)
+        if data.get("found"):
+            log.info(f"Found Turnstile container: {data['tag']} {data['cls']!r} "
+                     f"size={data['w']:.0f}x{data['h']:.0f}")
+
+            # Click in the center of the Turnstile widget
+            el = driver.execute_script(
+                "return document.elementFromPoint(arguments[0], arguments[1]);",
+                data["x"], data["y"]
+            )
+            if el:
+                actions = ActionChains(driver)
+                actions.move_to_element(el)
+                actions.pause(0.4)
+                actions.click()
+                actions.perform()
+                log.info("Clicked Turnstile container")
+
+            time.sleep(CAPTCHA_WAIT)
+            return True
+
+    except Exception as exc:
+        log.warning(f"Direct captcha click failed: {exc}")
+
+    return True  # proceed anyway
 
 
 def _check_success(driver):
@@ -1028,11 +1188,17 @@ def auto_vote(token, ui_log=None, headless=True):
     finally:
         if driver:
             if not headless:
-                # In visible mode, pause so user can inspect the browser
                 _log("🔍 [Debug] Browser staying open 15s for inspection...")
                 time.sleep(15)
             try:
                 driver.quit()
                 _log("🗳 [Auto] Browser closed")
+            except OSError:
+                pass  # undetected-chromedriver handle already closed — harmless
+            except Exception:
+                pass
+            # Prevent __del__ from trying to quit again
+            try:
+                driver.service.process = None
             except Exception:
                 pass
