@@ -1092,8 +1092,13 @@ def _check_success(driver):
     return False
 
 
+
 def auto_vote(token, ui_log=None, headless=True):
-    """Execute the full automatic vote pipeline.
+    """Execute the full automatic vote pipeline with retry.
+
+    If the first attempt fails to confirm success (often due to Cloudflare
+    captcha on first visit), automatically retries once — the captcha cookie
+    persists so the second attempt usually goes through clean.
 
     Args:
         token:    Discord user token (the same one used for the bot).
@@ -1111,6 +1116,33 @@ def auto_vote(token, ui_log=None, headless=True):
             except Exception:
                 pass
 
+    # Try up to 2 times — first attempt may hit Cloudflare captcha,
+    # second attempt benefits from the captcha cookie
+    for attempt in range(1, 3):
+        if attempt > 1:
+            _log("🗳 [Auto] Retrying vote (attempt 2 — captcha cookie should persist)...")
+            time.sleep(3)
+
+        result = _do_vote_attempt(token, headless, _log, attempt)
+
+        if result == "confirmed":
+            return True
+        if result == "likely":
+            if attempt == 1:
+                _log("🗳 [Auto] Vote unconfirmed — retrying to verify...")
+                continue
+            else:
+                return True
+        if result == "failed":
+            if attempt == 1:
+                continue
+            return False
+
+    return False
+
+
+def _do_vote_attempt(token, headless, _log, attempt):
+    """Single vote attempt. Returns 'confirmed', 'likely', or 'failed'."""
     driver = None
     try:
         _log("🗳 [Auto] Launching browser..." + (" (visible)" if not headless else ""))
@@ -1120,22 +1152,18 @@ def auto_vote(token, ui_log=None, headless=True):
             import sys
             py = sys.executable
             _log(f"❌ [Auto] Import failed: {ie}")
-            _log(f"   Python: {py}")
-            _log(f"   In PowerShell, run:")
-            _log(f'   & "{py}" -m pip install undetected-chromedriver selenium')
-            _log(f"   Or in CMD:")
-            _log(f'   "{py}" -m pip install undetected-chromedriver selenium')
-            return False
+            _log(f'   Run: & "{py}" -m pip install undetected-chromedriver selenium')
+            return "failed"
         except Exception as exc:
             _log(f"❌ [Auto] Could not launch Chrome: {exc}")
             _log("   Make sure Chrome or Chromium is installed on this system.")
-            return False
+            return "failed"
 
         # Step 1: Login to Discord via token injection
         _log("🗳 [Auto] Logging into Discord...")
         if not _inject_discord_token(driver, token):
             _log("❌ [Auto] Discord login failed — token may be invalid")
-            return False
+            return "failed"
 
         # Step 2: Navigate to top.gg vote page and log in via OAuth
         _log("🗳 [Auto] Navigating to top.gg + logging in...")
@@ -1144,61 +1172,66 @@ def auto_vote(token, ui_log=None, headless=True):
             _log("⚠ [Auto] Navigation uncertain — trying vote page directly...")
             driver.get(VOTE_URL)
             time.sleep(PAGE_LOAD_WAIT)
-        # Either way, proceed to try clicking the vote button
 
         # Step 3: Click the vote button (waits for ad to finish, up to ~45s)
         _log("🗳 [Auto] Waiting for ad + clicking vote button...")
         if not _click_vote_button(driver):
             _log("⚠ [Auto] Could not find vote button — page may have changed")
-            _log("   Check the vote_debug/ folder next to the .exe for screenshots")
-            return False
+            return "failed"
 
-        # Step 3b: Wait and verify the click registered
-        # After clicking Vote, top.gg may show a captcha, a confirmation,
-        # or the button may change to "Voted". Give it time.
+        # Step 3b: Wait for response
         _log("🗳 [Auto] Vote button clicked — waiting for response...")
         time.sleep(4)
-
-        # Take a debug snapshot after clicking
-        _dump_page_debug(driver, "post_vote_click")
+        _dump_page_debug(driver, f"post_vote_click_attempt{attempt}")
 
         # Step 4: Handle captcha if present
         _log("🗳 [Auto] Checking for captcha...")
         captcha_ok = _handle_captcha(driver)
         if not captcha_ok:
-            _log("⚠ [Auto] Captcha challenge may require manual intervention")
-            # Don't return False — it may still have worked
+            _log("⚠ [Auto] Captcha not solved — will retry")
+            return "likely"
 
-        # Step 5: Check for success (wait a bit more for the page to update)
+        # Step 5: Check for success
         time.sleep(3)
         success = _check_success(driver)
         if success:
             _log("✅ [Auto] Vote completed successfully!")
+            return "confirmed"
         else:
             _log("⚠ [Auto] Vote may have completed — could not confirm")
-
-        return True
+            return "likely"
 
     except Exception as exc:
         _log(f"❌ [Auto] Vote pipeline error: {exc}")
         import traceback
         log.error(traceback.format_exc())
-        return False
+        return "failed"
 
     finally:
-        if driver:
-            if not headless:
-                _log("🔍 [Debug] Browser staying open 15s for inspection...")
-                time.sleep(15)
-            try:
-                driver.quit()
-                _log("🗳 [Auto] Browser closed")
-            except OSError:
-                pass  # undetected-chromedriver handle already closed — harmless
-            except Exception:
-                pass
-            # Prevent __del__ from trying to quit again
-            try:
-                driver.service.process = None
-            except Exception:
-                pass
+        _close_driver(driver, headless, _log)
+
+
+def _close_driver(driver, headless, _log):
+    """Safely close the browser and suppress undetected-chromedriver errors."""
+    if not driver:
+        return
+    if not headless:
+        _log("🔍 [Debug] Browser staying open 15s for inspection...")
+        time.sleep(15)
+    try:
+        driver.quit()
+        _log("🗳 [Auto] Browser closed")
+    except OSError:
+        pass
+    except Exception:
+        pass
+    # Prevent undetected-chromedriver __del__ from double-quitting
+    try:
+        driver.service.process = None
+    except Exception:
+        pass
+    try:
+        driver._is_remote = False
+    except Exception:
+        pass
+
