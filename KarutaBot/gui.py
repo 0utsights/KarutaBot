@@ -12,6 +12,12 @@ from license import start_heartbeat, release_key
 from bot import run_discord_loop, do_drop
 
 
+# ─────────────────────────────────────────────
+#  Admin password (must match admin_dashboard)
+# ─────────────────────────────────────────────
+ADMIN_PASSWORD = "jKlm8675p"
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 #  Helpers
 # ─────────────────────────────────────────────────────────────────────────────
@@ -47,19 +53,12 @@ def _btn(parent, text, command, color=None, width=None, small=False):
                   bd=0)
     if width:
         b.config(width=width)
-    # Hover effect
     b.bind("<Enter>", lambda e: b.config(bg=C["accent2"]))
     b.bind("<Leave>", lambda e: b.config(bg=bg))
     return b
 
 def _divider(parent, pady=4):
     tk.Frame(parent, bg=C["border"], height=1).pack(fill="x", pady=pady)
-
-def _glass_frame(parent, **kw):
-    """A card-like frame with a subtle border."""
-    outer = tk.Frame(parent, bg=C["border"], bd=0)
-    inner = tk.Frame(outer, bg=C["card2"], bd=0, padx=16, pady=12)
-    inner.pack(fill="both", expand=True, padx=1, pady=1)
 
 
 class _Tooltip:
@@ -95,8 +94,6 @@ class _Tooltip:
 
 
 def _tip_label(parent, text, tooltip, row, col, padx=0):
-    """Render a muted setting label + a small cyan ? icon with a tooltip, in a parent grid."""
-    # Container so label and ? sit side-by-side without disturbing the grid
     frame = tk.Frame(parent, bg=C["card2"])
     frame.grid(row=row, column=col, sticky="w", padx=(padx, 0))
     tk.Label(frame, text=text, font=("Segoe UI", 7, "bold"),
@@ -108,7 +105,83 @@ def _tip_label(parent, text, tooltip, row, col, padx=0):
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-#  AccountPanel — one panel per account in the scrollable list
+#  Activity message classifier
+#  Translates raw debug log messages into user-friendly status lines.
+#  Returns (icon, friendly_text) or None to suppress the message entirely.
+# ─────────────────────────────────────────────────────────────────────────────
+_ACTIVITY_MAP = [
+    # (substring_match, icon, friendly_text_template)
+    # Order matters — first match wins
+
+    # ── Startup / connection ──
+    ("Logged in as",          "✅", lambda m: m.split("✅ ")[-1] if "✅" in m else m),
+    ("Starting...",           "🔄", lambda m: "Starting bot..."),
+    ("Invalid token",         "❌", lambda m: "Login failed — check your token"),
+    ("Connecting",            "🔄", lambda m: "Connecting to Discord..."),
+    ("Online as",             "✅", lambda m: m),
+
+    # ── Reminders ──
+    ("📋 Reminders:",         "📋", lambda m: "Checked reminders"),
+
+    # ── Dropping ──
+    ("🃏 Dropped!",           "🃏", lambda m: m.split("🃏 ")[-1]),
+    ("📋 Cards:",             "🃏", lambda m: "Cards: " + m.split("Cards: ")[-1] if "Cards:" in m else m),
+    ("⭐ Grabbing card",      "⭐", lambda m: m.split("⭐ ")[-1] if "⭐" in m else m),
+    ("🔥 Auto-grabbing",      "🔥", lambda m: m.split("🔥 ")[-1] if "🔥" in m else m),
+
+    # ── Voting ──
+    ("Vote is ready",         "🗳", lambda m: "Vote is ready — voting now..."),
+    ("Vote completed",        "✅", lambda m: "Vote completed!"),
+    ("Vote page opened",      "🗳", lambda m: "Vote page opened — click to complete"),
+    ("Headless vote failed",  "⚠️",  lambda m: "Auto-vote failed, trying manual..."),
+    ("vote.py not found",     "⚠️",  lambda m: "Auto-vote unavailable"),
+
+    # ── Daily ──
+    ("📅 Claiming daily",     "📅", lambda m: "Claiming daily reward..."),
+    ("Daily answered",        "✅", lambda m: "Daily reward claimed!"),
+    ("Daily already claimed", "📅", lambda m: "Daily already claimed"),
+
+    # ── Work ──
+    ("💼 Work:",              "💼", lambda m: "Optimizing work board..."),
+    ("Work confirmed",        "✅", lambda m: "Work submitted!"),
+    ("Work started",          "✅", lambda m: "Work started!"),
+
+    # ── Visit ──
+    ("🏛 Visiting shrine",    "🏛", lambda m: "Visiting shrine..."),
+    ("🏛 Selected:",          "🏛", lambda m: "Selected: " + m.split("Selected: ")[-1] if "Selected:" in m else m),
+    ("Visit done",            "✅", lambda m: "Shrine visit complete!"),
+    ("Visit round",           "🏛", lambda m: "Talking..."),
+
+    # ── Burn ──
+    ("Tagged for burn",       "🔥", lambda m: "Card tagged for burn"),
+
+    # ── Wishlist ──
+    ("♥ Wishlisted:",         "♥",  lambda m: m.split("♥ ")[-1] if "♥" in m else m),
+
+    # ── Sleep / timer ──
+    ("⏱ Next drop in",       "⏱",  lambda m: m.split("⏱ ")[-1] if "⏱" in m else m),
+    ("⏱ Drop on cooldown",   "⏱",  lambda m: "Drop on cooldown — waiting..."),
+    ("Daily drop limit",      "⚠️",  lambda m: "Daily drop limit reached"),
+    ("Daily drop counter reset", "🔄", lambda m: "Daily drop counter reset"),
+
+    # ── Errors (always show) ──
+    ("❌",                    "❌", lambda m: m.split("❌ ")[-1] if "❌" in m else m),
+    ("Discord 503",           "⚠️",  lambda m: "Discord temporarily unavailable — retrying..."),
+    ("Rate limited",          "⚠️",  lambda m: "Rate limited — waiting..."),
+    ("Stopped.",              "⏹",  lambda m: "Bot stopped"),
+]
+
+
+def _classify_activity(raw_msg):
+    """Return (icon, friendly_text) for a raw log message, or None to suppress."""
+    for substr, icon, formatter in _ACTIVITY_MAP:
+        if substr in raw_msg:
+            return icon, formatter(raw_msg)
+    return None
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+#  AccountPanel — one panel per account
 # ─────────────────────────────────────────────────────────────────────────────
 class AccountPanel:
     def __init__(self, parent, app, index, account_data):
@@ -116,7 +189,7 @@ class AccountPanel:
         self.index = index
         self.data  = account_data
 
-        # Session state (mirrors what bot.py needs)
+        # Session state
         self.client         = None
         self.loop           = None
         self.bot_thread     = None
@@ -124,15 +197,14 @@ class AccountPanel:
         self.next_drop_time = None
         self.drops_today    = 0
         self.last_reset     = datetime.now().date()
-        self._reminder_seconds    = {}   # last known values in seconds
-        self._reminder_updated_at = None # when they were last fetched
+        self._reminder_seconds    = {}
+        self._reminder_updated_at = None
 
         self._build(parent)
         self._update_timer()
         self._tick_reminders()
 
     def _build(self, parent):
-        # Outer border frame
         self.outer = tk.Frame(parent, bg=C["border"], bd=0)
         self.outer.pack(fill="x", padx=16, pady=6)
 
@@ -180,34 +252,26 @@ class AccountPanel:
         creds = tk.Frame(self.frame, bg=C["card2"])
         creds.pack(fill="x", padx=14, pady=(0, 8))
 
-        # Token
-        _tip_label(creds, "TOKEN", "Your Discord user token. Used to log in as your account.", row=0, col=0)
+        _tip_label(creds, "TOKEN", "Your Discord user token.", row=0, col=0)
         self.token_var = tk.StringVar(value=self.data.get("token", ""))
         te = _entry(creds, self.token_var, show="•", width=36)
         te.grid(row=1, column=0, sticky="ew", pady=(2, 6), ipady=5)
 
-        # Channel ID
-        _tip_label(creds, "CHANNEL ID", "The Discord channel ID where Karuta commands will be sent.", row=0, col=1, padx=16)
+        _tip_label(creds, "CHANNEL ID", "The Discord channel ID for Karuta commands.", row=0, col=1, padx=16)
         self.channel_var = tk.StringVar(value=self.data.get("channel_id", ""))
         ce = _entry(creds, self.channel_var, width=18)
         ce.grid(row=1, column=1, sticky="ew", pady=(2, 6), padx=(16, 0), ipady=5)
 
-        # Visit Card Code
         _tip_label(creds, "VISIT CARD CODE",
-                   "Optional. Pin a specific card code to always visit (e.g. nkkmpd).\n"
-                   "If set, skips k!affectionlist entirely and visits only this card.",
+                   "Optional. Pin a specific card code to always visit.\n"
+                   "If set, skips k!affectionlist entirely.",
                    row=0, col=2, padx=16)
         self.visit_card_var = tk.StringVar(value=self.data.get("visit_card_code", ""))
         ve = _entry(creds, self.visit_card_var, width=12)
         ve.grid(row=1, column=2, sticky="ew", pady=(2, 6), padx=(16, 0), ipady=5)
 
-        # Visit Tag
         _tip_label(creds, "VISIT TAG",
-                   "Optional. A card tag name to prioritise during visits.\n"
-                   "Cards in this tag that aren't on your affectionlist are visited first "
-                   "(to add them). Cards in the tag that are on the affectionlist are "
-                   "prioritised over non-tag cards. Energy ≥5 is still required for "
-                   "affectionlist cards.",
+                   "Optional. A card tag name to prioritise during visits.",
                    row=0, col=3, padx=16)
         self.visit_tag_var = tk.StringVar(value=self.data.get("visit_tag", ""))
         vte = _entry(creds, self.visit_tag_var, width=14)
@@ -217,19 +281,14 @@ class AccountPanel:
         settings = tk.Frame(self.frame, bg=C["card2"])
         settings.pack(fill="x", padx=14, pady=(0, 4))
 
-        _tip_label(settings, "MAX DROPS",
-                   "Maximum k!drop commands per day.\n"
-                   "The bot stops dropping once this limit is reached and waits until midnight.",
-                   row=0, col=0)
+        _tip_label(settings, "MAX DROPS", "Maximum k!drop commands per day.", row=0, col=0)
         self.max_drops_var = tk.IntVar(value=self.data.get("max_drops", MAX_DROPS_PER_DAY))
         tk.Spinbox(settings, from_=1, to=48, textvariable=self.max_drops_var,
                    width=5, bg=C["dark"], fg=C["text"], relief="flat",
                    font=("Segoe UI", 10), buttonbackground=C["card"],
                    ).grid(row=1, column=0, sticky="w", pady=(2, 0), ipady=4)
 
-        _tip_label(settings, "JITTER MIN (mins)",
-                   "Minimum random minutes added on top of the k!reminders drop cooldown.\n"
-                   "Adds human-like variation to avoid a fixed timing pattern.",
+        _tip_label(settings, "JITTER MIN (mins)", "Minimum random delay added to drop cooldown.",
                    row=0, col=1, padx=20)
         self.jitter_min_var = tk.IntVar(value=self.data.get("jitter_min", DROP_JITTER_MIN))
         tk.Spinbox(settings, from_=0, to=30, textvariable=self.jitter_min_var,
@@ -237,9 +296,7 @@ class AccountPanel:
                    font=("Segoe UI", 10), buttonbackground=C["card"],
                    ).grid(row=1, column=1, sticky="w", padx=(20, 0), pady=(2, 0), ipady=4)
 
-        _tip_label(settings, "JITTER MAX (mins)",
-                   "Maximum random minutes added on top of the k!reminders drop cooldown.\n"
-                   "A random value between JITTER MIN and JITTER MAX is chosen each cycle.",
+        _tip_label(settings, "JITTER MAX (mins)", "Maximum random delay added to drop cooldown.",
                    row=0, col=2, padx=12)
         self.jitter_max_var = tk.IntVar(value=self.data.get("jitter_max", DROP_JITTER_MAX))
         tk.Spinbox(settings, from_=0, to=60, textvariable=self.jitter_max_var,
@@ -248,14 +305,9 @@ class AccountPanel:
                    ).grid(row=1, column=2, sticky="w", padx=(12, 0), pady=(2, 0), ipady=4)
 
         _tip_label(settings, "VOTE MODE",
-                   "Controls how k!vote is handled when the vote timer is ready.\n\n"
-                   "Auto — Fully automatic. Launches a headless browser behind "
-                   "the scenes, logs into top.gg via your Discord token, clicks "
-                   "the vote button, and handles the captcha. Zero interaction "
-                   "needed. Requires Chrome/Chromium installed.\n\n"
-                   "Semi — Opens the top.gg vote page in your default browser. "
-                   "You just click the captcha checkbox (~5 seconds).\n\n"
-                   "Off — Ignores voting entirely.",
+                   "Auto — Fully automatic headless browser vote.\n"
+                   "Semi — Opens vote page in your browser.\n"
+                   "Off — Ignores voting.",
                    row=0, col=3, padx=16)
         self.vote_mode_var = tk.StringVar(value=self.data.get("vote_mode", "auto"))
         vote_menu = tk.OptionMenu(settings, self.vote_mode_var, "auto", "semi", "off")
@@ -269,16 +321,18 @@ class AccountPanel:
                                  font=("Segoe UI", 9))
         vote_menu.grid(row=1, column=3, sticky="w", padx=(16, 0), pady=(2, 0), ipady=2)
 
-        # "Show Browser" checkbox — makes the vote browser visible for debugging
+        # "Show Browser" — ADMIN ONLY (hidden by default)
         self.show_browser_var = tk.BooleanVar(value=self.data.get("show_browser", False))
-        show_cb = tk.Checkbutton(settings, text="Show Browser",
-                                 variable=self.show_browser_var,
-                                 bg=C["card2"], fg=C["muted"],
-                                 selectcolor=C["dark"],
-                                 activebackground=C["card2"],
-                                 activeforeground=C["text"],
-                                 font=("Segoe UI", 8))
-        show_cb.grid(row=1, column=4, sticky="w", padx=(8, 0), pady=(2, 0))
+        self.show_browser_cb = tk.Checkbutton(settings, text="Show Browser",
+                                              variable=self.show_browser_var,
+                                              bg=C["card2"], fg=C["muted"],
+                                              selectcolor=C["dark"],
+                                              activebackground=C["card2"],
+                                              activeforeground=C["text"],
+                                              font=("Segoe UI", 8))
+        self._show_browser_row = 1
+        self._show_browser_col = 4
+        # Not gridded — shown only in admin mode
 
         # ── Button row ──
         _divider(self.frame, pady=6)
@@ -318,9 +372,41 @@ class AccountPanel:
             lbl.pack()
             self._reminder_labels[key] = lbl
 
-        # ── Log box ──
+        # ── User-friendly Activity Feed ──
+        activity_header = tk.Frame(self.frame, bg=C["card2"])
+        activity_header.pack(fill="x", padx=14, pady=(4, 2))
+        tk.Label(activity_header, text="ACTIVITY", font=("Segoe UI", 7, "bold"),
+                 bg=C["card2"], fg=C["muted"]).pack(side="left")
+
+        self.activity_box = scrolledtext.ScrolledText(
+            self.frame, height=4, width=70,
+            bg=C["dark"], fg=C["text"],
+            font=("Segoe UI", 9),
+            relief="flat", state="disabled",
+            insertbackground=C["accent"],
+            selectbackground=C["accent2"],
+            wrap="word",
+        )
+        self.activity_box.pack(fill="x", padx=14, pady=(0, 4))
+
+        # Tag colors for activity feed
+        self.activity_box.tag_configure("icon", foreground=C["accent"])
+        self.activity_box.tag_configure("time", foreground=C["muted"], font=("Segoe UI", 8))
+        self.activity_box.tag_configure("success", foreground=C["green"])
+        self.activity_box.tag_configure("warning", foreground=C["yellow"])
+        self.activity_box.tag_configure("error", foreground=C["red"])
+
+        # ── Debug log — ADMIN ONLY (hidden by default) ──
+        self.debug_frame = tk.Frame(self.frame, bg=C["card2"])
+        # NOT packed by default
+
+        debug_header = tk.Frame(self.debug_frame, bg=C["card2"])
+        debug_header.pack(fill="x", padx=14, pady=(4, 2))
+        tk.Label(debug_header, text="DEBUG LOG (Admin)", font=("Segoe UI", 7, "bold"),
+                 bg=C["card2"], fg=C["red"]).pack(side="left")
+
         self.log_box = scrolledtext.ScrolledText(
-            self.frame, height=5, width=70,
+            self.debug_frame, height=6, width=70,
             bg=C["dark"], fg=C["text"],
             font=("Cascadia Code", 8) if self._font_exists("Cascadia Code") else ("Courier New", 8),
             relief="flat", state="disabled",
@@ -329,6 +415,10 @@ class AccountPanel:
         )
         self.log_box.pack(fill="x", padx=14, pady=(0, 14))
 
+        # Bottom spacer
+        self._bottom_spacer = tk.Frame(self.frame, bg=C["card2"], height=8)
+        self._bottom_spacer.pack(fill="x")
+
     def _font_exists(self, name):
         try:
             import tkinter.font as tkfont
@@ -336,19 +426,61 @@ class AccountPanel:
         except:
             return False
 
+    # ── Admin mode toggle ──
+    def set_admin_mode(self, is_admin):
+        if is_admin:
+            self.debug_frame.pack(fill="x", before=self._bottom_spacer)
+            self.show_browser_cb.grid(row=self._show_browser_row,
+                                       column=self._show_browser_col,
+                                       sticky="w", padx=(8, 0), pady=(2, 0))
+        else:
+            self.debug_frame.pack_forget()
+            self.show_browser_cb.grid_forget()
+
     # ── UI helpers ──
     def ui_log(self, msg):
-        self.app.root.after(0, lambda: self.log(msg))
+        self.app.root.after(0, lambda: self._log_both(msg))
 
     def ui_set_status(self, text, online=False):
         self.app.root.after(0, lambda: self._set_status(text, online))
 
-    def log(self, msg):
+    def _log_both(self, msg):
         ts = datetime.now().strftime("%H:%M:%S")
+
+        # Always write to debug log
         self.log_box.config(state="normal")
         self.log_box.insert("end", f"[{ts}] {msg}\n")
         self.log_box.see("end")
         self.log_box.config(state="disabled")
+
+        # Classify for activity feed
+        result = _classify_activity(msg)
+        if result:
+            icon, friendly = result
+            self.activity_box.config(state="normal")
+
+            self.activity_box.insert("end", f"  {ts}  ", "time")
+
+            if icon in ("✅",):
+                tag = "success"
+            elif icon in ("⚠️", "⚠"):
+                tag = "warning"
+            elif icon in ("❌",):
+                tag = "error"
+            else:
+                tag = ""
+
+            self.activity_box.insert("end", f"{icon}  ", "icon")
+            if tag:
+                self.activity_box.insert("end", f"{friendly}\n", tag)
+            else:
+                self.activity_box.insert("end", f"{friendly}\n")
+
+            self.activity_box.see("end")
+            self.activity_box.config(state="disabled")
+
+    def log(self, msg):
+        self._log_both(msg)
 
     def _set_status(self, text, online=False):
         self.status_dot.config(fg=C["accent3"] if online else C["red"])
@@ -359,12 +491,10 @@ class AccountPanel:
         self.drops_label.config(text=f"{self.drops_today} / {limit}", fg=color)
 
     def update_reminders(self, reminders):
-        """Store new reminder values from a fresh k!reminders fetch and reset the tick clock."""
         self._reminder_seconds    = dict(reminders)
         self._reminder_updated_at = datetime.now()
 
     def _tick_reminders(self):
-        """Run every second — decrement stored reminder values and refresh badge text."""
         if self._reminder_updated_at is not None and self._reminder_seconds:
             elapsed = (datetime.now() - self._reminder_updated_at).total_seconds()
             for key, lbl in self._reminder_labels.items():
@@ -413,7 +543,7 @@ class AccountPanel:
                 self.timer_label.config(text="--:--")
             self.app.root.after(1000, self._update_timer)
         except tk.TclError:
-            pass  # widget destroyed — stop updating
+            pass
 
     def get_data(self):
         return {
@@ -439,21 +569,18 @@ class AccountPanel:
             self.log("⚠ Please enter Token and Channel ID.")
             return
 
-        # Token sanity check — Discord tokens have two dots and are reasonably long
         if token.count(".") < 2 or len(token) < 50:
-            self.log("⚠ Token looks invalid. Make sure you copied the full token, not a partial or URL.")
+            self.log("⚠ Token looks invalid. Make sure you copied the full token.")
             return
 
-        # Channel ID must be a plain integer — catch the case where user pastes a URL
-        # or a server_id/channel_id path like '123456789/987654321'
         if "/" in channel_id or not channel_id.isdigit():
-            self.log("⚠ Channel ID looks invalid. It should be a plain number like 1234567890123456789.")
-            self.log("   Tip: right-click the channel in Discord → Copy Channel ID (enable Developer Mode first).")
+            self.log("⚠ Channel ID looks invalid. It should be a plain number.")
             return
 
         if len(channel_id) < 17:
             self.log("⚠ Channel ID is too short — Discord IDs are 17-19 digits.")
             return
+
         self.running = True
         self.start_btn.config(state="disabled")
         self.stop_btn.config(state="normal")
@@ -487,9 +614,9 @@ class AccountPanel:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-#  AeyoriApp — main window
+#  KarutaApp — main window
 # ─────────────────────────────────────────────────────────────────────────────
-class KarutaApp:  # KarutaApp name kept for internal compatibility only
+class KarutaApp:
     def __init__(self, root):
         self.root = root
         self.root.title(f"{APP_NAME}  v{APP_VERSION}")
@@ -497,26 +624,22 @@ class KarutaApp:  # KarutaApp name kept for internal compatibility only
         self.root.minsize(700, 600)
         self.root.configure(bg=C["bg"])
 
-        self.config   = load_config()
-        self.panels   = []
+        self.config     = load_config()
+        self.panels     = []
+        self.admin_mode = False
 
         self._build_ui()
         self._load_accounts()
 
-    # ─────────────────────────────────────────
-    #  Layout
-    # ─────────────────────────────────────────
     def _build_ui(self):
         # ── Top bar ──
         topbar = tk.Frame(self.root, bg=C["bg2"], height=52)
         topbar.pack(fill="x")
         topbar.pack_propagate(False)
 
-        # Logo / name
         logo_frame = tk.Frame(topbar, bg=C["bg2"])
         logo_frame.pack(side="left", padx=20)
 
-        # Glowing dot
         tk.Label(logo_frame, text="◆", font=("Segoe UI", 14),
                  bg=C["bg2"], fg=C["accent"]).pack(side="left", padx=(0, 8))
 
@@ -532,20 +655,19 @@ class KarutaApp:  # KarutaApp name kept for internal compatibility only
         tr = tk.Frame(topbar, bg=C["bg2"])
         tr.pack(side="right", padx=16)
 
+        _btn(tr, "⚙ Settings", self._open_settings, C["card2"], small=True).pack(side="left", padx=4)
         _btn(tr, "+ Add Account", self.add_account, C["accent"], small=True).pack(side="left", padx=4)
         _btn(tr, "📂 Import",     self.import_config, C["card2"], small=True).pack(side="left", padx=4)
         _btn(tr, "💾 Export",     self.export_config, C["card2"], small=True).pack(side="left", padx=4)
         _btn(tr, "❓ Token Help",  self.show_token_help, C["card2"], small=True).pack(side="left", padx=4)
 
-        # ── Thin accent line under topbar ──
         tk.Frame(self.root, bg=C["accent"], height=1).pack(fill="x")
 
         # ── Scrollable accounts area ──
         scroll_container = tk.Frame(self.root, bg=C["bg"])
         scroll_container.pack(fill="both", expand=True, pady=(8, 0))
 
-        canvas = tk.Canvas(scroll_container, bg=C["bg"],
-                           highlightthickness=0, bd=0)
+        canvas = tk.Canvas(scroll_container, bg=C["bg"], highlightthickness=0, bd=0)
         scrollbar = tk.Scrollbar(scroll_container, orient="vertical",
                                  command=canvas.yview,
                                  bg=C["bg"], troughcolor=C["bg"],
@@ -575,6 +697,12 @@ class KarutaApp:  # KarutaApp name kept for internal compatibility only
         footer = tk.Frame(self.root, bg=C["bg2"], height=28)
         footer.pack(fill="x")
         footer.pack_propagate(False)
+
+        self._admin_indicator = tk.Label(footer, text="",
+                                          font=("Segoe UI", 8, "bold"),
+                                          bg=C["bg2"], fg=C["red"])
+        self._admin_indicator.pack(side="right", padx=16)
+
         tk.Label(footer,
                  text=f"{APP_NAME} — automated card dropping",
                  font=("Segoe UI", 8), bg=C["bg2"], fg=C["muted"]).pack(side="left", padx=16)
@@ -592,8 +720,114 @@ class KarutaApp:  # KarutaApp name kept for internal compatibility only
         self.panels.append(panel)
         return panel
 
+    # ─────────────────────────────────────────
+    #  Settings Window
+    # ─────────────────────────────────────────
+    def _open_settings(self):
+        win = tk.Toplevel(self.root)
+        win.title(f"{APP_NAME} — Settings")
+        win.geometry("420x480")
+        win.resizable(False, False)
+        win.configure(bg=C["bg"])
+        win.grab_set()
+
+        tk.Frame(win, bg=C["accent"], height=2).pack(fill="x")
+
+        tk.Label(win, text="Settings",
+                 font=("Segoe UI", 14, "bold"),
+                 bg=C["bg"], fg=C["text"]).pack(pady=(20, 16))
+
+        # ── General ──
+        section = tk.Frame(win, bg=C["card2"])
+        section.pack(fill="x", padx=20, pady=(0, 12))
+        tk.Label(section, text="GENERAL", font=("Segoe UI", 8, "bold"),
+                 bg=C["card2"], fg=C["muted"]).pack(anchor="w", padx=12, pady=(10, 6))
+
+        row1 = tk.Frame(section, bg=C["card2"])
+        row1.pack(fill="x", padx=12, pady=4)
+        tk.Label(row1, text="Config auto-saves when you start a bot or close the app.",
+                 font=("Segoe UI", 9), bg=C["card2"], fg=C["text"]).pack(anchor="w")
+
+        row2 = tk.Frame(section, bg=C["card2"])
+        row2.pack(fill="x", padx=12, pady=(4, 10))
+        _btn(row2, "💾 Save Config Now", self.save_all, C["accent3"], small=True).pack(anchor="w")
+
+        # ── Admin Mode ──
+        admin_section = tk.Frame(win, bg=C["card2"])
+        admin_section.pack(fill="x", padx=20, pady=(0, 12))
+        tk.Label(admin_section, text="ADMIN MODE", font=("Segoe UI", 8, "bold"),
+                 bg=C["card2"], fg=C["muted"]).pack(anchor="w", padx=12, pady=(10, 4))
+
+        tk.Label(admin_section,
+                 text="Enables debug log and Show Browser toggle.\n"
+                      "Enter the admin password to activate.",
+                 font=("Segoe UI", 9), bg=C["card2"], fg=C["text"],
+                 justify="left").pack(anchor="w", padx=12, pady=(0, 8))
+
+        pass_frame = tk.Frame(admin_section, bg=C["card2"])
+        pass_frame.pack(fill="x", padx=12, pady=(0, 4))
+
+        tk.Label(pass_frame, text="Password:", font=("Segoe UI", 9),
+                 bg=C["card2"], fg=C["muted"]).pack(side="left", padx=(0, 8))
+        admin_pass_var = tk.StringVar()
+        admin_entry = tk.Entry(pass_frame, textvariable=admin_pass_var, show="•",
+                               bg=C["dark"], fg=C["text"],
+                               insertbackground=C["accent"],
+                               relief="flat", font=("Segoe UI", 10),
+                               width=20, bd=0,
+                               highlightthickness=1,
+                               highlightbackground=C["border"],
+                               highlightcolor=C["accent"])
+        admin_entry.pack(side="left", ipady=5)
+
+        admin_status = tk.Label(admin_section, text="", font=("Segoe UI", 9),
+                                bg=C["card2"], fg=C["muted"])
+        admin_status.pack(anchor="w", padx=12, pady=(4, 4))
+
+        def toggle_admin():
+            if self.admin_mode:
+                self.admin_mode = False
+                for panel in self.panels:
+                    panel.set_admin_mode(False)
+                self._admin_indicator.config(text="")
+                admin_status.config(text="Admin mode disabled", fg=C["muted"])
+                toggle_btn.config(text="🔓 Enable Admin Mode")
+            else:
+                pw = admin_pass_var.get().strip()
+                if pw == ADMIN_PASSWORD:
+                    self.admin_mode = True
+                    for panel in self.panels:
+                        panel.set_admin_mode(True)
+                    self._admin_indicator.config(text="🔧 ADMIN")
+                    admin_status.config(text="Admin mode enabled!", fg=C["green"])
+                    toggle_btn.config(text="🔒 Disable Admin Mode")
+                else:
+                    admin_status.config(text="Wrong password", fg=C["red"])
+
+        btn_frame = tk.Frame(admin_section, bg=C["card2"])
+        btn_frame.pack(fill="x", padx=12, pady=(0, 10))
+
+        toggle_text = "🔒 Disable Admin Mode" if self.admin_mode else "🔓 Enable Admin Mode"
+        toggle_btn = _btn(btn_frame, toggle_text, toggle_admin, C["accent"], small=True)
+        toggle_btn.pack(anchor="w")
+
+        # ── About ──
+        about_section = tk.Frame(win, bg=C["card2"])
+        about_section.pack(fill="x", padx=20, pady=(0, 12))
+        tk.Label(about_section, text="ABOUT", font=("Segoe UI", 8, "bold"),
+                 bg=C["card2"], fg=C["muted"]).pack(anchor="w", padx=12, pady=(10, 4))
+        tk.Label(about_section,
+                 text=f"{APP_NAME} v{APP_VERSION}\n"
+                      f"Automated Karuta card dropping & management",
+                 font=("Segoe UI", 9), bg=C["card2"], fg=C["text"],
+                 justify="left").pack(anchor="w", padx=12, pady=(0, 10))
+
+        _btn(win, "Close", win.destroy, C["card2"]).pack(pady=(8, 16))
+
+    # ─────────────────────────────────────────
+    #  Account management
+    # ─────────────────────────────────────────
     def import_config(self):
-        """Load accounts from a JSON config file, replacing current accounts."""
         path = filedialog.askopenfilename(
             title="Import Aeyori Config",
             filetypes=[("JSON files", "*.json"), ("All files", "*.*")],
@@ -612,7 +846,7 @@ class KarutaApp:  # KarutaApp name kept for internal compatibility only
         elif isinstance(data, dict) and "accounts" in data:
             accounts = data["accounts"]
         else:
-            messagebox.showerror("Import Failed", "File format not recognised.\nExpected {\"accounts\": [...]} or a list of account objects.")
+            messagebox.showerror("Import Failed", "File format not recognised.")
             return
 
         if not accounts:
@@ -635,12 +869,13 @@ class KarutaApp:  # KarutaApp name kept for internal compatibility only
 
         for acc in accounts:
             self._add_panel(acc)
+            if self.admin_mode:
+                self.panels[-1].set_admin_mode(True)
 
         self.save_all()
         messagebox.showinfo("Import Complete", f"Loaded {len(accounts)} account(s) from file.")
 
     def export_config(self):
-        """Save current account config to a JSON file."""
         path = filedialog.asksaveasfilename(
             title="Export Aeyori Config",
             defaultextension=".json",
@@ -666,20 +901,20 @@ class KarutaApp:  # KarutaApp name kept for internal compatibility only
             messagebox.showerror("Export Failed", f"Could not save file:\n{e}")
 
     def add_account(self):
-        self._add_panel()
+        panel = self._add_panel()
+        if self.admin_mode:
+            panel.set_admin_mode(True)
         self.save_all()
-        # Scroll to bottom
         self.canvas.after(100, lambda: self.canvas.yview_moveto(1.0))
 
     def remove_account(self, index):
         if len(self.panels) <= 1:
-            return  # always keep at least one
+            return
         panel = self.panels[index]
         if panel.running:
             panel.stop_bot()
         panel.outer.destroy()
         self.panels.pop(index)
-        # Re-index remaining panels
         for i, p in enumerate(self.panels):
             p.index = i
         self.save_all()
@@ -688,7 +923,7 @@ class KarutaApp:  # KarutaApp name kept for internal compatibility only
         accounts = [p.get_data() for p in self.panels]
         save_config({"accounts": accounts})
 
-    # ── Compatibility shims (license.py / main.py use app.root) ──
+    # ── Compatibility shims ──
     def ui_log(self, msg):
         if self.panels:
             self.panels[0].ui_log(msg)

@@ -1190,31 +1190,51 @@ def _rank_visit_cards(cards, tag_codes=None):
 
 
 async def _check_card_owned(app, client, channel, code):
-    """Send k!c code=<id> and return True if the card exists in the collection, False if empty."""
-    await send_safe(channel, f"k!c code={code}", app)
+    """Send k!c code=<id> and return True if the card exists in the collection.
 
-    def check(m):
-        return m.channel.id == channel.id and m.author.id == KARUTA_ID
+    Handles Karuta cooldown responses ('you cannot use that command for another X seconds')
+    by waiting the specified time + 1s buffer and retrying automatically.
+    """
+    MAX_RETRIES = 3
 
-    try:
-        msg = await client.wait_for("message", check=check, timeout=12)
-    except asyncio.TimeoutError:
-        app.ui_log(f"   ⚠ k!c code={code} timed out — skipping")
-        return False
+    for attempt in range(MAX_RETRIES):
+        await send_safe(channel, f"k!c code={code}", app)
 
-    # Check all text surfaces for the empty marker
-    full_text = msg.content
-    for emb in msg.embeds:
-        full_text += str(emb.title or "") + str(emb.description or "")
-        for f in emb.fields:
-            full_text += str(f.value or "")
+        def check(m):
+            return m.channel.id == channel.id and m.author.id == KARUTA_ID
 
-    if "The list is empty" in full_text:
-        app.ui_log(f"   ⚠ {code} not in collection — skipping")
-        return False
+        try:
+            msg = await client.wait_for("message", check=check, timeout=12)
+        except asyncio.TimeoutError:
+            app.ui_log(f"   ⚠ k!c code={code} timed out — skipping")
+            return False
 
-    app.ui_log(f"   ✅ {code} confirmed in collection")
-    return True
+        # ── Handle cooldown response ──
+        if "cannot use" in msg.content.lower():
+            secs_match = re.search(r'(\d+)\s*second', msg.content, re.IGNORECASE)
+            wait_secs = int(secs_match.group(1)) + 1 if secs_match else 6
+            app.ui_log(f"   ⏳ k!c cooldown — waiting {wait_secs}s before retry "
+                       f"(attempt {attempt + 1}/{MAX_RETRIES})")
+            await asyncio.sleep(wait_secs)
+            continue  # retry the command
+
+        # ── Normal response — check if card is in collection ──
+        full_text = msg.content
+        for emb in msg.embeds:
+            full_text += str(emb.title or "") + str(emb.description or "")
+            for f in emb.fields:
+                full_text += str(f.value or "")
+
+        if "The list is empty" in full_text:
+            app.ui_log(f"   ⚠ {code} not in collection — skipping")
+            return False
+
+        app.ui_log(f"   ✅ {code} confirmed in collection")
+        return True
+
+    # Exhausted retries
+    app.ui_log(f"   ⚠ k!c code={code} failed after {MAX_RETRIES} cooldown retries — skipping")
+    return False
 
 
 # ─────────────────────────────────────────────
@@ -1255,6 +1275,18 @@ async def do_visit(app, client, channel):
             for i, candidate in enumerate(ranked):
                 is_unreg = candidate.get("_unregistered", False)
                 energy_str = "unregistered" if is_unreg else f"energy={candidate['energy']}"
+
+                # ── Skip ownership check if card came from k!c tag= ──
+                # Cards returned by k!c tag=<tag> are already confirmed
+                # to be in the collection (k!c IS the collection command).
+                if tag_codes and candidate["code"] in tag_codes:
+                    card_code = candidate["code"]
+                    score_str = f"score={candidate['score']}" if not is_unreg else "new to affectionlist"
+                    app.ui_log(f"🏛 Selected: {candidate['name']} ({card_code}) — {energy_str} {score_str}")
+                    app.ui_log(f"   ✅ Ownership already confirmed via k!c tag={visit_tag}")
+                    break
+
+                # ── Card is NOT from the tag — need to verify ownership ──
                 app.ui_log(f"   🔍 Checking ownership: {candidate['name']} ({candidate['code']}) [{energy_str}]")
                 if i > 0:
                     app.ui_log("   ⏳ k!c cooldown — waiting 10s...")
