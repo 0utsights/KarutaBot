@@ -10,7 +10,7 @@ APP_VERSION       = "1.0.0"
 # ─────────────────────────────────────────────
 #  Constants
 # ─────────────────────────────────────────────
-SERVER_URL        = "https://karutabot-production.up.railway.app"
+SERVER_URL        = "https://aeyori-production.up.railway.app"
 CONFIG_FILE       = "config.json"
 MAX_DROPS_PER_DAY = 40
 DROP_COOLDOWN_MIN = 30
