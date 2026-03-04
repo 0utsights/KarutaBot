@@ -127,6 +127,7 @@ class LoadingScreen:
 # ─────────────────────────────────────────────────────────
 def main():
     screen = LoadingScreen()
+    all_ok = True
     screen.set_status("Checking requirements...")
     screen.set_progress(10)
     screen.root.update()
@@ -169,8 +170,8 @@ def main():
         return
 
     # ── Launch the real app ──
-    import karuta_bot  # your main app file
-    karuta_bot.launch()
+    import main  # your main app file
+    main.launch()
 
 
 if __name__ == "__main__":

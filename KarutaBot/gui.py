@@ -15,7 +15,7 @@ from bot import run_discord_loop, do_drop
 # ─────────────────────────────────────────────
 #  Admin password (must match admin_dashboard)
 # ─────────────────────────────────────────────
-ADMIN_PASSWORD = "jKlm8675p"
+# Admin panel is now in admin_dashboard.py
 
 
 # ─────────────────────────────────────────────────────────────────────────────
