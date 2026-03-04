@@ -8,7 +8,7 @@ from datetime import datetime
 #  CONFIG
 # ─────────────────────────────────────────────
 SERVER_URL     = "https://aeyori-production.up.railway.app"
-ADMIN_PASSWORD = ""  # Set this to your ADMIN_PASSWORD env var value
+ADMIN_PASSWORD = "8764abc213"
 
 C = {
     "bg":       "#1e1f22",
