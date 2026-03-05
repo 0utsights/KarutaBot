@@ -52,7 +52,19 @@ def default_account():
         "jitter_min":  DROP_JITTER_MIN,
         "jitter_max":  DROP_JITTER_MAX,
         "vote_mode":  "auto",       # "auto" | "semi" | "off"
+        "show_browser": False,
+        "visit_card_code": "",
+        "visit_tag":  "visit",
         "enabled":    True,
+        # ── Per-account macro toggles ──
+        "macros": {
+            "daily":  True,
+            "vote":   True,
+            "work":   True,
+            "drop":   True,
+            "grab":   True,
+            "visit":  True,
+        },
     }
 
 def load_config():
@@ -70,6 +82,11 @@ def load_config():
                 "jitter_max":  DROP_JITTER_MAX,
                 "enabled":    True,
             }]}
+        # Migrate accounts missing macros dict
+        default_macros = default_account()["macros"]
+        for acc in data.get("accounts", []):
+            if "macros" not in acc:
+                acc["macros"] = dict(default_macros)
         return data
     return {"accounts": [default_account()]}
 
