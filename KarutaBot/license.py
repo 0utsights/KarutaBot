@@ -14,7 +14,7 @@ def validate_key(key):
             return True, "OK", data.get("features", {})
         return False, data.get("detail", "Invalid key"), {}
     except Exception as e:
-        return False, "Could not reach license server. Check your internet.", {}
+        return False, f"Error: {str(e)}", {}
 
 
 def start_heartbeat(key):
