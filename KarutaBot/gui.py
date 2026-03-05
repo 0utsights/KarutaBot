@@ -181,6 +181,48 @@ def _classify_activity(raw_msg):
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+#  Toggle Switch — custom Canvas-based on/off switch
+# ─────────────────────────────────────────────────────────────────────────────
+class _ToggleSwitch(tk.Canvas):
+    """A smooth on/off toggle switch widget bound to a BooleanVar."""
+    def __init__(self, parent, variable, on_color=None, off_color=None,
+                 width=44, height=22):
+        super().__init__(parent, width=width, height=height,
+                         bg=C["card2"], highlightthickness=0, bd=0)
+        self.var = variable
+        self.on_color  = on_color  or C["accent3"]
+        self.off_color = off_color or C["muted"]
+        self.w = width
+        self.h = height
+        self.r = height // 2  # radius
+
+        self.bind("<Button-1>", self._toggle)
+        self.var.trace_add("write", lambda *a: self._draw())
+        self._draw()
+
+    def _toggle(self, event=None):
+        self.var.set(not self.var.get())
+
+    def _draw(self):
+        self.delete("all")
+        on = self.var.get()
+        bg = self.on_color if on else self.off_color
+
+        # Track (rounded rect via two circles + rect)
+        r = self.r
+        self.create_oval(1, 1, 2*r, 2*r, fill=bg, outline=bg)
+        self.create_oval(self.w - 2*r, 1, self.w - 1, 2*r, fill=bg, outline=bg)
+        self.create_rectangle(r, 1, self.w - r, 2*r, fill=bg, outline=bg)
+
+        # Knob
+        knob_x = self.w - r - 2 if on else r + 1
+        knob_r = r - 3
+        self.create_oval(knob_x - knob_r, r - knob_r,
+                         knob_x + knob_r, r + knob_r,
+                         fill=C["white"], outline=C["white"])
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 #  AccountPanel — one panel per account
 # ─────────────────────────────────────────────────────────────────────────────
 class AccountPanel:
@@ -199,6 +241,15 @@ class AccountPanel:
         self.last_reset     = datetime.now().date()
         self._reminder_seconds    = {}
         self._reminder_updated_at = None
+
+        # ── Per-account macro toggles ──
+        macros = account_data.get("macros", {})
+        self.macro_daily  = tk.BooleanVar(value=macros.get("daily", True))
+        self.macro_vote   = tk.BooleanVar(value=macros.get("vote", True))
+        self.macro_work   = tk.BooleanVar(value=macros.get("work", True))
+        self.macro_drop   = tk.BooleanVar(value=macros.get("drop", True))
+        self.macro_grab   = tk.BooleanVar(value=macros.get("grab", True))
+        self.macro_visit  = tk.BooleanVar(value=macros.get("visit", True))
 
         self._build(parent)
         self._update_timer()
@@ -337,7 +388,7 @@ class AccountPanel:
         # ── Button row ──
         _divider(self.frame, pady=6)
         btns = tk.Frame(self.frame, bg=C["card2"])
-        btns.pack(fill="x", padx=14, pady=(0, 12))
+        btns.pack(fill="x", padx=14, pady=(0, 6))
 
         self.start_btn = _btn(btns, "▶  Start",  self.start_bot, C["accent3"], small=True)
         self.start_btn.pack(side="left", padx=(0, 6))
@@ -350,12 +401,41 @@ class AccountPanel:
         self.drop_btn.pack(side="left", padx=(0, 6))
         self.drop_btn.config(state="disabled")
 
+        settings_btn = _btn(btns, "⚙ Settings", self._open_account_settings, C["card"], small=True)
+        settings_btn.config(fg=C["accent"])
+        settings_btn.pack(side="left", padx=(0, 6))
+
         remove_btn = _btn(btns, "✕ Remove", lambda: self.app.remove_account(self.index),
                           C["card"], small=True)
         remove_btn.config(fg=C["muted"])
         remove_btn.bind("<Enter>", lambda e: remove_btn.config(fg=C["red"]))
         remove_btn.bind("<Leave>", lambda e: remove_btn.config(fg=C["muted"]))
         remove_btn.pack(side="right")
+
+        # ── Macro status badges ──
+        macro_frame = tk.Frame(self.frame, bg=C["card2"])
+        macro_frame.pack(fill="x", padx=14, pady=(0, 6))
+        tk.Label(macro_frame, text="MACROS", font=("Segoe UI", 6, "bold"),
+                 bg=C["card2"], fg=C["muted"]).pack(side="left", padx=(0, 8))
+
+        self._macro_badges = {}
+        macro_map = [
+            ("daily", self.macro_daily),
+            ("vote",  self.macro_vote),
+            ("work",  self.macro_work),
+            ("drop",  self.macro_drop),
+            ("grab",  self.macro_grab),
+            ("visit", self.macro_visit),
+        ]
+        for name, var in macro_map:
+            badge = tk.Label(macro_frame, text=name.upper(),
+                             font=("Segoe UI", 7, "bold"),
+                             bg=C["dark"], fg=C["accent3"] if var.get() else C["muted"],
+                             padx=8, pady=2)
+            badge.pack(side="left", padx=(0, 4))
+            self._macro_badges[name] = badge
+            # Update badge color when toggle changes
+            var.trace_add("write", lambda *a, n=name, v=var: self._update_badge(n, v))
 
         # ── Reminders status bar ──
         rem_frame = tk.Frame(self.frame, bg=C["card2"])
@@ -425,6 +505,120 @@ class AccountPanel:
             return name in tkfont.families()
         except:
             return False
+
+    def _update_badge(self, name, var):
+        badge = self._macro_badges.get(name)
+        if badge:
+            badge.config(fg=C["accent3"] if var.get() else C["muted"])
+
+    # ── Per-account settings popup ──
+    def _open_account_settings(self):
+        win = tk.Toplevel(self.app.root)
+        win.title(f"Settings — {self.name_var.get()}")
+        win.geometry("400x560")
+        win.resizable(False, False)
+        win.configure(bg=C["bg"])
+        win.grab_set()
+
+        tk.Frame(win, bg=C["accent"], height=2).pack(fill="x")
+
+        tk.Label(win, text=f"⚙  {self.name_var.get()}",
+                 font=("Segoe UI", 14, "bold"),
+                 bg=C["bg"], fg=C["text"]).pack(pady=(20, 4))
+        tk.Label(win, text="Toggle which macros run on this account",
+                 font=("Segoe UI", 9), bg=C["bg"], fg=C["muted"]).pack(pady=(0, 16))
+
+        # ── Macro toggles section ──
+        macros_section = tk.Frame(win, bg=C["card2"])
+        macros_section.pack(fill="x", padx=20, pady=(0, 12))
+        tk.Label(macros_section, text="MACRO TOGGLES", font=("Segoe UI", 8, "bold"),
+                 bg=C["card2"], fg=C["muted"]).pack(anchor="w", padx=12, pady=(10, 6))
+
+        macro_info = [
+            ("drop",  self.macro_drop,  "🃏 Drop",  "Automatically use k!drop on cooldown"),
+            ("grab",  self.macro_grab,  "⭐ Grab",  "Auto-grab the best card from drops (OCR + wishlist)"),
+            ("daily", self.macro_daily, "📅 Daily", "Claim k!daily reward and answer quiz"),
+            ("vote",  self.macro_vote,  "🗳 Vote",  "Vote on top.gg (uses vote mode setting)"),
+            ("work",  self.macro_work,  "💼 Work",  "Optimize job board and run k!work"),
+            ("visit", self.macro_visit, "🏛 Visit", "Visit shrine, talk, and use actions"),
+        ]
+
+        for key, var, label, desc in macro_info:
+            row = tk.Frame(macros_section, bg=C["card2"])
+            row.pack(fill="x", padx=12, pady=3)
+
+            # Toggle switch frame
+            toggle_frame = tk.Frame(row, bg=C["card2"])
+            toggle_frame.pack(side="right", padx=(8, 0))
+
+            toggle = _ToggleSwitch(toggle_frame, var, on_color=C["accent3"], off_color=C["muted"])
+            toggle.pack()
+
+            # Label + description
+            info_frame = tk.Frame(row, bg=C["card2"])
+            info_frame.pack(side="left", fill="x", expand=True)
+            tk.Label(info_frame, text=label, font=("Segoe UI", 10, "bold"),
+                     bg=C["card2"], fg=C["text"], anchor="w").pack(anchor="w")
+            tk.Label(info_frame, text=desc, font=("Segoe UI", 8),
+                     bg=C["card2"], fg=C["muted"], anchor="w").pack(anchor="w")
+
+        tk.Frame(macros_section, bg=C["card2"], height=8).pack()
+
+        # ── Quick actions ──
+        quick_section = tk.Frame(win, bg=C["card2"])
+        quick_section.pack(fill="x", padx=20, pady=(0, 12))
+        tk.Label(quick_section, text="QUICK ACTIONS", font=("Segoe UI", 8, "bold"),
+                 bg=C["card2"], fg=C["muted"]).pack(anchor="w", padx=12, pady=(10, 6))
+
+        quick_btns = tk.Frame(quick_section, bg=C["card2"])
+        quick_btns.pack(fill="x", padx=12, pady=(0, 10))
+
+        def enable_all():
+            for _, v, _, _ in macro_info:
+                v.set(True)
+            self.app.save_all()
+
+        def disable_all():
+            for _, v, _, _ in macro_info:
+                v.set(False)
+            self.app.save_all()
+
+        def drops_only():
+            for k, v, _, _ in macro_info:
+                v.set(k in ("drop", "grab"))
+            self.app.save_all()
+
+        _btn(quick_btns, "Enable All", enable_all, C["accent3"], small=True).pack(side="left", padx=(0, 6))
+        _btn(quick_btns, "Disable All", disable_all, C["red"], small=True).pack(side="left", padx=(0, 6))
+        _btn(quick_btns, "Drops Only", drops_only, C["accent"], small=True).pack(side="left", padx=(0, 6))
+
+        # ── Advanced settings (vote mode, jitter, etc.) ──
+        adv_section = tk.Frame(win, bg=C["card2"])
+        adv_section.pack(fill="x", padx=20, pady=(0, 12))
+        tk.Label(adv_section, text="ADVANCED", font=("Segoe UI", 8, "bold"),
+                 bg=C["card2"], fg=C["muted"]).pack(anchor="w", padx=12, pady=(10, 6))
+
+        adv_grid = tk.Frame(adv_section, bg=C["card2"])
+        adv_grid.pack(fill="x", padx=12, pady=(0, 10))
+
+        tk.Label(adv_grid, text="Vote Mode:", font=("Segoe UI", 9),
+                 bg=C["card2"], fg=C["text"]).grid(row=0, column=0, sticky="w", pady=2)
+        vote_menu = tk.OptionMenu(adv_grid, self.vote_mode_var, "auto", "semi", "off")
+        vote_menu.config(bg=C["dark"], fg=C["text"], relief="flat",
+                         font=("Segoe UI", 9), activebackground=C["accent2"],
+                         activeforeground=C["dark"], highlightthickness=0,
+                         width=6, bd=0)
+        vote_menu["menu"].config(bg=C["dark"], fg=C["text"],
+                                 activebackground=C["accent"],
+                                 activeforeground=C["dark"],
+                                 font=("Segoe UI", 9))
+        vote_menu.grid(row=0, column=1, sticky="w", padx=(8, 0), pady=2)
+
+        def close_and_save():
+            self.app.save_all()
+            win.destroy()
+
+        _btn(win, "Save & Close", close_and_save, C["accent"]).pack(pady=(12, 16))
 
     # ── Admin mode toggle ──
     def set_admin_mode(self, is_admin):
@@ -558,6 +752,14 @@ class AccountPanel:
             "visit_card_code": self.visit_card_var.get().strip(),
             "visit_tag":       self.visit_tag_var.get().strip(),
             "enabled":         True,
+            "macros": {
+                "daily":  self.macro_daily.get(),
+                "vote":   self.macro_vote.get(),
+                "work":   self.macro_work.get(),
+                "drop":   self.macro_drop.get(),
+                "grab":   self.macro_grab.get(),
+                "visit":  self.macro_visit.get(),
+            },
         }
 
     # ── Bot control ──

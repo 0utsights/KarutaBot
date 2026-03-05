@@ -193,37 +193,42 @@ async def automation_loop(app, client, channel_id):
             await asyncio.sleep(2)
 
             # ── Vote ──
-            vote_mode = getattr(app, "vote_mode_var", None)
-            vote_mode = vote_mode.get() if vote_mode else "semi"
+            if getattr(app, "macro_vote", None) and app.macro_vote.get():
+                vote_mode = getattr(app, "vote_mode_var", None)
+                vote_mode = vote_mode.get() if vote_mode else "semi"
 
-            if reminders.get("Vote") == 0 and vote_mode != "off":
-                await do_vote(app, client, channel)
-                await asyncio.sleep(2)
+                if reminders.get("Vote") == 0 and vote_mode != "off":
+                    await do_vote(app, client, channel)
+                    await asyncio.sleep(2)
 
             # ── Daily ──
-            if reminders.get("Daily") == 0:
-                await do_daily(app, client, channel)
-                await asyncio.sleep(2)
+            if getattr(app, "macro_daily", None) and app.macro_daily.get():
+                if reminders.get("Daily") == 0:
+                    await do_daily(app, client, channel)
+                    await asyncio.sleep(2)
 
-            # ── Drop ──
-            drop_cooldown = reminders.get("Drop")  # seconds remaining, 0 = ready, None = unknown
+            # ── Drop (+ Grab is checked inside do_drop) ──
+            if getattr(app, "macro_drop", None) and app.macro_drop.get():
+                drop_cooldown = reminders.get("Drop")  # seconds remaining, 0 = ready, None = unknown
 
-            if app.drops_today >= app.max_drops_var.get():
-                app.ui_log(f"⚠ Daily drop limit reached ({app.max_drops_var.get()}). Skipping drop.")
-            elif drop_cooldown and drop_cooldown > 0:
-                app.ui_log(f"⏱ Drop on cooldown ({int(drop_cooldown // 60)}m) — skipping drop this cycle")
-            else:
-                await do_drop(app, client, channel)
+                if app.drops_today >= app.max_drops_var.get():
+                    app.ui_log(f"⚠ Daily drop limit reached ({app.max_drops_var.get()}). Skipping drop.")
+                elif drop_cooldown and drop_cooldown > 0:
+                    app.ui_log(f"⏱ Drop on cooldown ({int(drop_cooldown // 60)}m) — skipping drop this cycle")
+                else:
+                    await do_drop(app, client, channel)
 
             # ── Work ──
-            if reminders.get("Work") == 0:
-                await do_work(app, client, channel)
-                await asyncio.sleep(2)
+            if getattr(app, "macro_work", None) and app.macro_work.get():
+                if reminders.get("Work") == 0:
+                    await do_work(app, client, channel)
+                    await asyncio.sleep(2)
 
             # ── Visit ──
-            if reminders.get("Visit") == 0:
-                await do_visit(app, client, channel)
-                await asyncio.sleep(2)
+            if getattr(app, "macro_visit", None) and app.macro_visit.get():
+                if reminders.get("Visit") == 0:
+                    await do_visit(app, client, channel)
+                    await asyncio.sleep(2)
 
             # Re-fetch reminders after all commands so badges and sleep duration are accurate
             await asyncio.sleep(2)
@@ -434,18 +439,24 @@ async def do_drop(app, client, channel):
             card["wishes"] = result  # None = lookup failed, 0 = found with 0 wishes
 
         # Pick + grab
-        best_idx = pick_best_card(app, cards)
-        best     = cards[best_idx]
-        emoji    = ["1️⃣", "2️⃣", "3️⃣"][best_idx]
+        grab_enabled = getattr(app, "macro_grab", None)
+        grab_enabled = grab_enabled.get() if grab_enabled else True
 
-        app.ui_log(
-            f"⭐ Grabbing card {best_idx+1}: {best['name']} "
-            f"(print: #{best['print']}, wishes: {best['wishes']})")
-        await drop_msg.add_reaction(emoji)
+        if not grab_enabled:
+            app.ui_log("⏭ Grab macro disabled — skipping card grab")
+        else:
+            best_idx = pick_best_card(app, cards)
+            best     = cards[best_idx]
+            emoji    = ["1️⃣", "2️⃣", "3️⃣"][best_idx]
 
-        # Check burn eligibility
-        await asyncio.sleep(3)
-        await maybe_tag_burn(app, client, channel, best)
+            app.ui_log(
+                f"⭐ Grabbing card {best_idx+1}: {best['name']} "
+                f"(print: #{best['print']}, wishes: {best['wishes']})")
+            await drop_msg.add_reaction(emoji)
+
+            # Check burn eligibility
+            await asyncio.sleep(3)
+            await maybe_tag_burn(app, client, channel, best)
 
     except Exception:
         import traceback
