@@ -540,8 +540,12 @@ class AccountPanel:
         canvas_win = canvas.create_window((0, 0), window=content, anchor="nw")
         content.bind("<Configure>", lambda e: canvas.configure(scrollregion=canvas.bbox("all")))
         canvas.bind("<Configure>", lambda e: canvas.itemconfig(canvas_win, width=e.width))
-        canvas.bind_all("<MouseWheel>",
-                        lambda e: canvas.yview_scroll(-1 * (e.delta // 120), "units"))
+        def _settings_scroll(e):
+            if canvas.winfo_exists():
+                canvas.yview_scroll(-1 * (e.delta // 120), "units")
+                canvas.update_idletasks()
+        canvas.bind_all("<MouseWheel>", _settings_scroll)
+        win.bind("<Destroy>", lambda e: canvas.unbind_all("<MouseWheel>"))
 
         # ── Header ──
         tk.Label(content, text=f"⚙  {self.name_var.get()}",
@@ -976,7 +980,8 @@ class KarutaApp:
         scroll_container = tk.Frame(self.root, bg=C["bg"])
         scroll_container.pack(fill="both", expand=True, pady=(8, 0))
 
-        canvas = tk.Canvas(scroll_container, bg=C["bg"], highlightthickness=0, bd=0)
+        canvas = tk.Canvas(scroll_container, bg=C["bg"], highlightthickness=0, bd=0,
+                           confine=True)
         scrollbar = _themed_scrollbar(scroll_container, orient="vertical",
                                    command=canvas.yview)
         canvas.configure(yscrollcommand=scrollbar.set)
@@ -985,7 +990,10 @@ class KarutaApp:
         canvas.pack(side="left", fill="both", expand=True)
 
         self.accounts_frame = tk.Frame(canvas, bg=C["bg"])
-        self.canvas_window  = canvas.create_window((0, 0), window=self.accounts_frame, anchor="nw")
+        self.canvas_window  = canvas.create_window((0, 0), window=self.accounts_frame,
+                                                   anchor="nw")
+        # Prevent ghost artifacts on Windows by keeping canvas fill in sync
+        canvas.configure(bg=C["bg"])
 
         def _on_frame_configure(e):
             canvas.configure(scrollregion=canvas.bbox("all"))
@@ -994,8 +1002,21 @@ class KarutaApp:
 
         self.accounts_frame.bind("<Configure>", _on_frame_configure)
         canvas.bind("<Configure>",              _on_canvas_configure)
-        canvas.bind_all("<MouseWheel>",
-                        lambda e: canvas.yview_scroll(-1 * (e.delta // 120), "units"))
+
+        _scroll_job = [None]
+        def _main_scroll(e):
+            if not canvas.winfo_exists():
+                return
+            if _scroll_job[0]:
+                canvas.after_cancel(_scroll_job[0])
+            steps = -1 * (e.delta // 120)
+            def _do_scroll():
+                if canvas.winfo_exists():
+                    canvas.yview_scroll(steps, "units")
+                    canvas.update_idletasks()
+                _scroll_job[0] = None
+            _scroll_job[0] = canvas.after(8, _do_scroll)
+        canvas.bind_all("<MouseWheel>", _main_scroll)
 
         self.canvas = canvas
 
