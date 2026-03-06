@@ -29,12 +29,12 @@ KARUTA_BOT_ID = "646937666251915264"
 VOTE_URL = f"https://top.gg/bot/{KARUTA_BOT_ID}/vote"
 
 # ── Timeouts & retries ──
-PAGE_LOAD_WAIT   = 8      # seconds to wait for pages to load
-TOKEN_INJECT_WAIT = 4     # seconds after token inject before reload
-OAUTH_FLOW_WAIT  = 12     # seconds for Discord→top.gg OAuth redirect chain
-VOTE_BTN_WAIT    = 45     # seconds to poll for vote button (includes ad wait)
-CAPTCHA_WAIT     = 8      # seconds to wait for captcha to resolve after click
-SUCCESS_WAIT     = 6      # seconds to check for success confirmation
+PAGE_LOAD_WAIT    = 8      # seconds to wait for pages to load
+TOKEN_INJECT_WAIT = 4      # seconds after token inject before reload
+OAUTH_FLOW_WAIT   = 12     # seconds for Discord→top.gg OAuth redirect chain
+VOTE_BTN_WAIT     = 45     # seconds to poll for vote button (includes ad wait)
+CAPTCHA_WAIT      = 8      # seconds to wait for captcha to resolve after click
+SUCCESS_WAIT      = 6      # seconds to check for success confirmation
 
 
 def _create_driver(headless=True):
@@ -43,6 +43,8 @@ def _create_driver(headless=True):
     Returns the driver, or raises ImportError / RuntimeError if Chrome
     or the undetected-chromedriver package is unavailable.
     """
+    import subprocess
+    import re as _re
     import undetected_chromedriver as uc
 
     options = uc.ChromeOptions()
@@ -62,7 +64,6 @@ def _create_driver(headless=True):
     # when v145 is installed), so we read it ourselves.
     chrome_ver = None
     try:
-        import subprocess, re as _re
         # Windows: query registry for Chrome version
         result = subprocess.run(
             ['reg', 'query',
@@ -80,7 +81,6 @@ def _create_driver(headless=True):
     if not chrome_ver:
         # Fallback: try reading from the Chrome executable directly
         try:
-            import subprocess, re as _re
             for path in [
                 r"C:\Program Files\Google\Chrome\Application\chrome.exe",
                 r"C:\Program Files (x86)\Google\Chrome\Application\chrome.exe",
@@ -171,8 +171,6 @@ def _navigate_to_vote(driver):
     time.sleep(PAGE_LOAD_WAIT)
 
     # ── Handle redirects — top.gg may bounce us through Discord OAuth ──
-    # We may need multiple passes since it can chain:
-    #   top.gg → discord login → discord oauth → top.gg
     for attempt in range(3):
         current = driver.current_url
         log.info(f"[attempt {attempt+1}] URL: {current}")
@@ -189,8 +187,6 @@ def _navigate_to_vote(driver):
             continue
 
         if "top.gg" in current:
-            # We're on top.gg — check if there's a visible login button
-            # that we need to click (meaning we're not logged in yet)
             login_needed = _try_click_login_if_needed(driver)
             if login_needed == "clicked":
                 log.info("Clicked login on top.gg — waiting for OAuth redirect...")
@@ -200,7 +196,6 @@ def _navigate_to_vote(driver):
                 log.info("Already logged into top.gg ✓")
                 break
             else:
-                # Ambiguous — just proceed, the vote button check will tell us
                 log.info("Login status unclear — proceeding to vote button")
                 break
 
@@ -296,7 +291,6 @@ def _click_authorize(driver):
     from selenium.webdriver.support import expected_conditions as EC
 
     try:
-        # Wait for page to fully load
         time.sleep(3)
 
         # Try WebDriverWait for the authorize button
@@ -399,8 +393,6 @@ def _click_vote_button(driver):
     _dump_page_debug(driver, "pre_vote_click")
 
     # ── Phase 1: Wait for ad to complete (up to ~40s) ──
-    # Top.gg shows an ad before enabling the vote button.  We poll the page
-    # every few seconds, looking for a clickable vote element.
     MAX_POLL = 45          # total seconds to keep trying
     POLL_INTERVAL = 3      # seconds between attempts
     elapsed = 0
@@ -446,7 +438,6 @@ def _click_vote_button(driver):
 def _log_visible_elements(driver, label=""):
     """Log every visible button/link/interactive element for debugging."""
     try:
-        from selenium.webdriver.common.by import By
         info = driver.execute_script("""
             let out = [];
             let els = document.querySelectorAll(
@@ -643,7 +634,6 @@ def _try_find_and_click_vote(driver):
                     best["cx"], best["cy"]
                 )
                 if vote_el:
-                    # Log what elementFromPoint actually returned
                     actual_tag = driver.execute_script("return arguments[0].tagName;", vote_el)
                     actual_text = driver.execute_script(
                         "return (arguments[0].textContent || '').trim().substring(0, 40);", vote_el)
@@ -665,10 +655,8 @@ def _try_find_and_click_vote(driver):
                     time.sleep(3)
                     new_text = (driver.page_source or "").lower()
 
-                    # Did "you can vote now" disappear? That means click worked
                     if "you can vote now" in page_state and "you can vote now" not in new_text:
                         log.info("'You can vote now' disappeared — vote click registered!")
-                    # Did a success message appear?
                     for phrase in ["you have voted", "thanks for voting", "come back in",
                                    "next vote in"]:
                         if phrase in new_text and phrase not in page_state:
@@ -785,7 +773,6 @@ def _handle_captcha(driver):
     time.sleep(2)
 
     # ── Check if captcha is even present ──
-    # Look for "solve the captcha" or "verify you are human" in visible text
     try:
         has_captcha = driver.execute_script("""
             let els = document.querySelectorAll('h1, h2, h3, h4, h5, p, span, div');
@@ -810,8 +797,6 @@ def _handle_captcha(driver):
     log.info("Captcha detected — looking for Cloudflare Turnstile iframe...")
 
     # ── Find the Turnstile iframe ──
-    # Cloudflare Turnstile uses an iframe with src containing "challenges.cloudflare.com"
-    # or with title containing "Cloudflare" or "Turnstile"
     captcha_frame = None
     try:
         iframes = driver.find_elements(By.TAG_NAME, "iframe")
@@ -825,19 +810,14 @@ def _handle_captcha(driver):
             log.info(f"  iframe: src={src[:100]!r} title={title!r} "
                      f"name={name[:50]!r} size={w}x{h}")
 
-            if ("challenges.cloudflare.com" in src or
-                "turnstile" in src.lower() or
-                "cloudflare" in title.lower() or
-                "turnstile" in title.lower() or
-                "cf-turnstile" in name.lower()):
+            if (("challenges.cloudflare.com" in src or
+                 "turnstile" in src.lower() or
+                 "cloudflare" in title.lower() or
+                 "turnstile" in title.lower() or
+                 "cf-turnstile" in name.lower()) or
+                ("recaptcha" in src.lower() or "recaptcha" in title.lower())):
                 captcha_frame = iframe
-                log.info("  → This is the Turnstile iframe!")
-                break
-
-            # Also check for reCAPTCHA as fallback
-            if "recaptcha" in src.lower() or "recaptcha" in title.lower():
-                captcha_frame = iframe
-                log.info("  → This is a reCAPTCHA iframe!")
+                log.info("  → Captcha iframe found!")
                 break
 
         if not captcha_frame:
@@ -856,7 +836,6 @@ def _handle_captcha(driver):
 
     if not captcha_frame:
         log.info("No captcha iframe found — trying direct checkbox click...")
-        # Try clicking the checkbox without iframe switching
         return _try_direct_captcha_click(driver)
 
     # ── Click inside the Turnstile iframe ──
@@ -865,8 +844,6 @@ def _handle_captcha(driver):
         driver.switch_to.frame(captcha_frame)
         time.sleep(1)
 
-        # Turnstile has a checkbox/label element inside
-        # Try to find and click it
         checkbox = None
 
         # Strategy 1: Find by common Turnstile selectors
@@ -902,7 +879,6 @@ def _handle_captcha(driver):
                 pass
 
         if checkbox:
-            # Human-like click with slight delay
             actions = ActionChains(driver)
             actions.move_to_element(checkbox)
             actions.pause(0.3 + (time.time() % 1) * 0.3)
@@ -925,7 +901,6 @@ def _handle_captcha(driver):
 
     # ── Verify captcha was solved ──
     try:
-        # Check if the captcha text is gone from the visible page
         still_captcha = driver.execute_script("""
             let els = document.querySelectorAll('h1, h2, h3, h4, h5, p, span, div');
             for (let el of els) {
@@ -957,7 +932,6 @@ def _try_direct_captcha_click(driver):
     Sometimes Turnstile renders in a shadow DOM or in a way that doesn't
     require iframe switching. This tries clicking the visible checkbox directly.
     """
-    from selenium.webdriver.common.by import By
     from selenium.webdriver.common.action_chains import ActionChains
 
     try:
@@ -986,7 +960,6 @@ def _try_direct_captcha_click(driver):
             log.info(f"Found Turnstile container: {data['tag']} {data['cls']!r} "
                      f"size={data['w']:.0f}x{data['h']:.0f}")
 
-            # Click in the center of the Turnstile widget
             el = driver.execute_script(
                 "return document.elementFromPoint(arguments[0], arguments[1]);",
                 data["x"], data["y"]
@@ -1016,8 +989,6 @@ def _check_success(driver):
     # script tags, or React bundles that might contain false matches
     try:
         visible_text = driver.execute_script("""
-            // Get visible text from the vote area, not the entire page
-            // (the page source contains JS bundles with strings like 'login to vote')
             let texts = [];
             let els = document.querySelectorAll('h1, h2, h3, h4, h5, p, span, div, button, a');
             for (let el of els) {
@@ -1062,7 +1033,6 @@ def _check_success(driver):
 
     # Check if the vote button changed to "voted" state
     try:
-        from selenium.webdriver.common.by import By
         result = driver.execute_script("""
             let found = [];
             let all = document.querySelectorAll('button, a, [role="button"], span, div');
@@ -1090,7 +1060,6 @@ def _check_success(driver):
 
     log.info("Could not confirm vote success — may have worked anyway")
     return False
-
 
 
 def auto_vote(token, ui_log=None, headless=True):
@@ -1234,4 +1203,3 @@ def _close_driver(driver, headless, _log):
         driver._is_remote = False
     except Exception:
         pass
-

@@ -108,7 +108,6 @@ def _clean_print(raw):
 # ── Image preprocessing ────────────────────────────────────────────────────────
 def _preprocess(img, trim_sides=0.18):
     """Trim frame edges and upscale for better OCR accuracy."""
-    from PIL import ImageEnhance
     w, h = img.size
     trim = int(w * trim_sides)
     img = img.crop((trim, 0, w - trim, h))
@@ -193,9 +192,7 @@ def parse_drop_image(image_url, log_fn=None):
             print_crop.save(os.path.join(DEBUG_DIR,  f"card{i+1}_print_processed.png"))
 
         raw_name   = _ocr_text(reader, name_crop)
-
         raw_series = _ocr_text(reader, series_crop)
-
         raw_print  = _ocr_print(reader, print_crop)
 
         log(f"Card {i+1} raw — name: {raw_name!r}  series: {raw_series!r}  print: {raw_print!r}")

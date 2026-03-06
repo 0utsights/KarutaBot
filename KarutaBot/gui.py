@@ -12,12 +12,6 @@ from license import start_heartbeat, release_key
 from bot import run_discord_loop, do_drop
 
 
-# ─────────────────────────────────────────────
-#  Admin password (must match admin_dashboard)
-# ─────────────────────────────────────────────
-# Admin panel is now in admin_dashboard.py
-
-
 # ─────────────────────────────────────────────────────────────────────────────
 #  Themed scrollbar — replaces the ugly default OS scrollbar everywhere
 # ─────────────────────────────────────────────────────────────────────────────
@@ -764,11 +758,11 @@ class AccountPanel:
 
             self.activity_box.insert("end", f"  {ts}  ", "time")
 
-            if icon in ("✅",):
+            if icon == "✅":
                 tag = "success"
             elif icon in ("⚠️", "⚠"):
                 tag = "warning"
-            elif icon in ("❌",):
+            elif icon == "❌":
                 tag = "error"
             else:
                 tag = ""
@@ -992,7 +986,6 @@ class KarutaApp:
         self.accounts_frame = tk.Frame(canvas, bg=C["bg"])
         self.canvas_window  = canvas.create_window((0, 0), window=self.accounts_frame,
                                                    anchor="nw")
-        # Prevent ghost artifacts on Windows by keeping canvas fill in sync
         canvas.configure(bg=C["bg"])
 
         def _on_frame_configure(e):
