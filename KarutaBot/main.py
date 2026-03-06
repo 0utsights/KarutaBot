@@ -35,7 +35,7 @@ def show_key_screen():
             return
         status.config(text="Validating...", fg=C["muted"])
         win.update()
-        success, reason, features = validate_key(key)
+        success, reason, _ = validate_key(key)
         if success:
             result["key"] = key
             win.destroy()
