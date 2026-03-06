@@ -1,5 +1,5 @@
 import tkinter as tk
-from tkinter import scrolledtext, filedialog, messagebox
+from tkinter import scrolledtext, filedialog, messagebox, ttk
 import threading
 import webbrowser
 import json
@@ -16,6 +16,57 @@ from bot import run_discord_loop, do_drop
 #  Admin password (must match admin_dashboard)
 # ─────────────────────────────────────────────
 # Admin panel is now in admin_dashboard.py
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+#  Themed scrollbar — replaces the ugly default OS scrollbar everywhere
+# ─────────────────────────────────────────────────────────────────────────────
+def _apply_scrollbar_style(root_widget):
+    """Configure a ttk Style for flat dark scrollbars. Call once at app start."""
+    style = ttk.Style(root_widget)
+    style.theme_use("clam")
+    style.configure(
+        "Dark.Vertical.TScrollbar",
+        gripcount=0,
+        background=C["card2"],       # thumb colour
+        darkcolor=C["bg"],
+        lightcolor=C["bg"],
+        troughcolor=C["bg"],         # track
+        bordercolor=C["bg"],
+        arrowcolor=C["muted"],       # arrow buttons
+        relief="flat",
+        borderwidth=0,
+        arrowsize=12,
+    )
+    style.map(
+        "Dark.Vertical.TScrollbar",
+        background=[("active", C["accent2"]), ("pressed", C["accent"])],
+        arrowcolor=[("active", C["accent"])],
+    )
+    style.configure(
+        "Dark.Horizontal.TScrollbar",
+        gripcount=0,
+        background=C["card2"],
+        darkcolor=C["bg"],
+        lightcolor=C["bg"],
+        troughcolor=C["bg"],
+        bordercolor=C["bg"],
+        arrowcolor=C["muted"],
+        relief="flat",
+        borderwidth=0,
+        arrowsize=12,
+    )
+    style.map(
+        "Dark.Horizontal.TScrollbar",
+        background=[("active", C["accent2"]), ("pressed", C["accent"])],
+        arrowcolor=[("active", C["accent"])],
+    )
+
+
+def _themed_scrollbar(parent, orient="vertical", **kw):
+    """Return a ttk Scrollbar using the dark theme style."""
+    s = "Dark.Vertical.TScrollbar" if orient == "vertical" else "Dark.Horizontal.TScrollbar"
+    return ttk.Scrollbar(parent, orient=orient, style=s, **kw)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -153,12 +204,14 @@ _ACTIVITY_MAP = [
     ("Visit round",           "🏛", lambda m: "Talking..."),
 
     # ── Burn ──
-    ("Tagged for burn",       "🔥", lambda m: "Card tagged for burn"),
+    ("Burned",                "🔥", lambda m: m.split("🔥 ")[-1] if "🔥" in m else m),
+    ("eligible for burn",     "🔥", lambda m: "Burning low-value card..."),
 
     # ── Wishlist ──
     ("♥ Wishlisted:",         "♥",  lambda m: m.split("♥ ")[-1] if "♥" in m else m),
 
     # ── Sleep / timer ──
+    ("⏱ Next cycle in",      "⏱",  lambda m: m.split("⏱ ")[-1] if "⏱" in m else m),
     ("⏱ Next drop in",       "⏱",  lambda m: m.split("⏱ ")[-1] if "⏱" in m else m),
     ("⏱ Drop on cooldown",   "⏱",  lambda m: "Drop on cooldown — waiting..."),
     ("Daily drop limit",      "⚠️",  lambda m: "Daily drop limit reached"),
@@ -305,85 +358,23 @@ class AccountPanel:
 
         _tip_label(creds, "TOKEN", "Your Discord user token.", row=0, col=0)
         self.token_var = tk.StringVar(value=self.data.get("token", ""))
-        te = _entry(creds, self.token_var, show="•", width=36)
+        te = _entry(creds, self.token_var, show="•", width=40)
         te.grid(row=1, column=0, sticky="ew", pady=(2, 6), ipady=5)
 
         _tip_label(creds, "CHANNEL ID", "The Discord channel ID for Karuta commands.", row=0, col=1, padx=16)
         self.channel_var = tk.StringVar(value=self.data.get("channel_id", ""))
-        ce = _entry(creds, self.channel_var, width=18)
+        ce = _entry(creds, self.channel_var, width=20)
         ce.grid(row=1, column=1, sticky="ew", pady=(2, 6), padx=(16, 0), ipady=5)
 
-        _tip_label(creds, "VISIT CARD CODE",
-                   "Optional. Pin a specific card code to always visit.\n"
-                   "If set, skips k!affectionlist entirely.",
-                   row=0, col=2, padx=16)
-        self.visit_card_var = tk.StringVar(value=self.data.get("visit_card_code", ""))
-        ve = _entry(creds, self.visit_card_var, width=12)
-        ve.grid(row=1, column=2, sticky="ew", pady=(2, 6), padx=(16, 0), ipady=5)
-
-        _tip_label(creds, "VISIT TAG",
-                   "Optional. A card tag name to prioritise during visits.",
-                   row=0, col=3, padx=16)
-        self.visit_tag_var = tk.StringVar(value=self.data.get("visit_tag", ""))
-        vte = _entry(creds, self.visit_tag_var, width=14)
-        vte.grid(row=1, column=3, sticky="ew", pady=(2, 6), padx=(16, 0), ipady=5)
-
-        # ── Settings row ──
-        settings = tk.Frame(self.frame, bg=C["card2"])
-        settings.pack(fill="x", padx=14, pady=(0, 4))
-
-        _tip_label(settings, "MAX DROPS", "Maximum k!drop commands per day.", row=0, col=0)
-        self.max_drops_var = tk.IntVar(value=self.data.get("max_drops", MAX_DROPS_PER_DAY))
-        tk.Spinbox(settings, from_=1, to=48, textvariable=self.max_drops_var,
-                   width=5, bg=C["dark"], fg=C["text"], relief="flat",
-                   font=("Segoe UI", 10), buttonbackground=C["card"],
-                   ).grid(row=1, column=0, sticky="w", pady=(2, 0), ipady=4)
-
-        _tip_label(settings, "JITTER MIN (mins)", "Minimum random delay added to drop cooldown.",
-                   row=0, col=1, padx=20)
-        self.jitter_min_var = tk.IntVar(value=self.data.get("jitter_min", DROP_JITTER_MIN))
-        tk.Spinbox(settings, from_=0, to=30, textvariable=self.jitter_min_var,
-                   width=5, bg=C["dark"], fg=C["text"], relief="flat",
-                   font=("Segoe UI", 10), buttonbackground=C["card"],
-                   ).grid(row=1, column=1, sticky="w", padx=(20, 0), pady=(2, 0), ipady=4)
-
-        _tip_label(settings, "JITTER MAX (mins)", "Maximum random delay added to drop cooldown.",
-                   row=0, col=2, padx=12)
-        self.jitter_max_var = tk.IntVar(value=self.data.get("jitter_max", DROP_JITTER_MAX))
-        tk.Spinbox(settings, from_=0, to=60, textvariable=self.jitter_max_var,
-                   width=5, bg=C["dark"], fg=C["text"], relief="flat",
-                   font=("Segoe UI", 10), buttonbackground=C["card"],
-                   ).grid(row=1, column=2, sticky="w", padx=(12, 0), pady=(2, 0), ipady=4)
-
-        _tip_label(settings, "VOTE MODE",
-                   "Auto — Fully automatic headless browser vote.\n"
-                   "Semi — Opens vote page in your browser.\n"
-                   "Off — Ignores voting.",
-                   row=0, col=3, padx=16)
-        self.vote_mode_var = tk.StringVar(value=self.data.get("vote_mode", "auto"))
-        vote_menu = tk.OptionMenu(settings, self.vote_mode_var, "auto", "semi", "off")
-        vote_menu.config(bg=C["dark"], fg=C["text"], relief="flat",
-                         font=("Segoe UI", 9), activebackground=C["accent2"],
-                         activeforeground=C["dark"], highlightthickness=0,
-                         width=5, bd=0, padx=4)
-        vote_menu["menu"].config(bg=C["dark"], fg=C["text"],
-                                 activebackground=C["accent"],
-                                 activeforeground=C["dark"],
-                                 font=("Segoe UI", 9))
-        vote_menu.grid(row=1, column=3, sticky="w", padx=(16, 0), pady=(2, 0), ipady=2)
-
-        # "Show Browser" — ADMIN ONLY (hidden by default)
+        # ── Hidden vars (edited via Settings popup) ──
+        self.visit_card_var   = tk.StringVar(value=self.data.get("visit_card_code", ""))
+        self.visit_tag_var    = tk.StringVar(value=self.data.get("visit_tag", ""))
+        self.max_drops_var    = tk.IntVar(value=self.data.get("max_drops", MAX_DROPS_PER_DAY))
+        self.jitter_min_var   = tk.IntVar(value=self.data.get("jitter_min", DROP_JITTER_MIN))
+        self.jitter_max_var   = tk.IntVar(value=self.data.get("jitter_max", DROP_JITTER_MAX))
+        self.vote_mode_var    = tk.StringVar(value=self.data.get("vote_mode", "auto"))
         self.show_browser_var = tk.BooleanVar(value=self.data.get("show_browser", False))
-        self.show_browser_cb = tk.Checkbutton(settings, text="Show Browser",
-                                              variable=self.show_browser_var,
-                                              bg=C["card2"], fg=C["muted"],
-                                              selectcolor=C["dark"],
-                                              activebackground=C["card2"],
-                                              activeforeground=C["text"],
-                                              font=("Segoe UI", 8))
-        self._show_browser_row = 1
-        self._show_browser_col = 4
-        # Not gridded — shown only in admin mode
+        self.auto_burn_var    = tk.BooleanVar(value=self.data.get("auto_burn", False))
 
         # ── Button row ──
         _divider(self.frame, pady=6)
@@ -458,16 +449,23 @@ class AccountPanel:
         tk.Label(activity_header, text="ACTIVITY", font=("Segoe UI", 7, "bold"),
                  bg=C["card2"], fg=C["muted"]).pack(side="left")
 
-        self.activity_box = scrolledtext.ScrolledText(
-            self.frame, height=4, width=70,
+        _act_frame = tk.Frame(self.frame, bg=C["dark"],
+                              highlightthickness=1, highlightbackground=C["border"])
+        _act_frame.pack(fill="x", padx=14, pady=(0, 4))
+        self.activity_box = tk.Text(
+            _act_frame, height=4, width=70,
             bg=C["dark"], fg=C["text"],
             font=("Segoe UI", 9),
             relief="flat", state="disabled",
             insertbackground=C["accent"],
             selectbackground=C["accent2"],
-            wrap="word",
+            wrap="word", bd=0,
         )
-        self.activity_box.pack(fill="x", padx=14, pady=(0, 4))
+        _act_sb = _themed_scrollbar(_act_frame, orient="vertical",
+                                    command=self.activity_box.yview)
+        self.activity_box.configure(yscrollcommand=_act_sb.set)
+        _act_sb.pack(side="right", fill="y")
+        self.activity_box.pack(side="left", fill="both", expand=True)
 
         # Tag colors for activity feed
         self.activity_box.tag_configure("icon", foreground=C["accent"])
@@ -485,15 +483,24 @@ class AccountPanel:
         tk.Label(debug_header, text="DEBUG LOG (Admin)", font=("Segoe UI", 7, "bold"),
                  bg=C["card2"], fg=C["red"]).pack(side="left")
 
-        self.log_box = scrolledtext.ScrolledText(
-            self.debug_frame, height=6, width=70,
+        _log_font = ("Cascadia Code", 8) if self._font_exists("Cascadia Code") else ("Courier New", 8)
+        _log_frame = tk.Frame(self.debug_frame, bg=C["dark"],
+                              highlightthickness=1, highlightbackground=C["border"])
+        _log_frame.pack(fill="x", padx=14, pady=(0, 14))
+        self.log_box = tk.Text(
+            _log_frame, height=6, width=70,
             bg=C["dark"], fg=C["text"],
-            font=("Cascadia Code", 8) if self._font_exists("Cascadia Code") else ("Courier New", 8),
+            font=_log_font,
             relief="flat", state="disabled",
             insertbackground=C["accent"],
             selectbackground=C["accent2"],
+            bd=0,
         )
-        self.log_box.pack(fill="x", padx=14, pady=(0, 14))
+        _log_sb = _themed_scrollbar(_log_frame, orient="vertical",
+                                    command=self.log_box.yview)
+        self.log_box.configure(yscrollcommand=_log_sb.set)
+        _log_sb.pack(side="right", fill="y")
+        self.log_box.pack(side="left", fill="both", expand=True)
 
         # Bottom spacer
         self._bottom_spacer = tk.Frame(self.frame, bg=C["card2"], height=8)
@@ -515,46 +522,57 @@ class AccountPanel:
     def _open_account_settings(self):
         win = tk.Toplevel(self.app.root)
         win.title(f"Settings — {self.name_var.get()}")
-        win.geometry("400x560")
-        win.resizable(False, False)
+        win.geometry("440x700")
+        win.resizable(False, True)
         win.configure(bg=C["bg"])
         win.grab_set()
 
         tk.Frame(win, bg=C["accent"], height=2).pack(fill="x")
 
-        tk.Label(win, text=f"⚙  {self.name_var.get()}",
-                 font=("Segoe UI", 14, "bold"),
-                 bg=C["bg"], fg=C["text"]).pack(pady=(20, 4))
-        tk.Label(win, text="Toggle which macros run on this account",
-                 font=("Segoe UI", 9), bg=C["bg"], fg=C["muted"]).pack(pady=(0, 16))
+        # ── Scrollable content ──
+        canvas = tk.Canvas(win, bg=C["bg"], highlightthickness=0, bd=0)
+        scrollbar = _themed_scrollbar(win, orient="vertical", command=canvas.yview)
+        canvas.configure(yscrollcommand=scrollbar.set)
+        scrollbar.pack(side="right", fill="y")
+        canvas.pack(side="left", fill="both", expand=True)
 
-        # ── Macro toggles section ──
-        macros_section = tk.Frame(win, bg=C["card2"])
-        macros_section.pack(fill="x", padx=20, pady=(0, 12))
+        content = tk.Frame(canvas, bg=C["bg"])
+        canvas_win = canvas.create_window((0, 0), window=content, anchor="nw")
+        content.bind("<Configure>", lambda e: canvas.configure(scrollregion=canvas.bbox("all")))
+        canvas.bind("<Configure>", lambda e: canvas.itemconfig(canvas_win, width=e.width))
+        canvas.bind_all("<MouseWheel>",
+                        lambda e: canvas.yview_scroll(-1 * (e.delta // 120), "units"))
+
+        # ── Header ──
+        tk.Label(content, text=f"⚙  {self.name_var.get()}",
+                 font=("Segoe UI", 14, "bold"),
+                 bg=C["bg"], fg=C["text"]).pack(pady=(16, 4))
+        tk.Label(content, text="Configure macros and settings for this account",
+                 font=("Segoe UI", 9), bg=C["bg"], fg=C["muted"]).pack(pady=(0, 12))
+
+        # ════════════════════════════════════════════
+        #  MACRO TOGGLES
+        # ════════════════════════════════════════════
+        macros_section = tk.Frame(content, bg=C["card2"])
+        macros_section.pack(fill="x", padx=20, pady=(0, 10))
         tk.Label(macros_section, text="MACRO TOGGLES", font=("Segoe UI", 8, "bold"),
                  bg=C["card2"], fg=C["muted"]).pack(anchor="w", padx=12, pady=(10, 6))
 
         macro_info = [
-            ("drop",  self.macro_drop,  "🃏 Drop",  "Automatically use k!drop on cooldown"),
+            ("drop",  self.macro_drop,  "🃏 Drop",  "Automatically use k!drop on cooldown (30m cycle)"),
             ("grab",  self.macro_grab,  "⭐ Grab",  "Auto-grab the best card from drops (OCR + wishlist)"),
-            ("daily", self.macro_daily, "📅 Daily", "Claim k!daily reward and answer quiz"),
-            ("vote",  self.macro_vote,  "🗳 Vote",  "Vote on top.gg (uses vote mode setting)"),
-            ("work",  self.macro_work,  "💼 Work",  "Optimize job board and run k!work"),
-            ("visit", self.macro_visit, "🏛 Visit", "Visit shrine, talk, and use actions"),
+            ("daily", self.macro_daily, "📅 Daily", "Claim k!daily reward and answer quiz (24h cycle)"),
+            ("vote",  self.macro_vote,  "🗳 Vote",  "Vote on top.gg (12h cycle)"),
+            ("work",  self.macro_work,  "💼 Work",  "Optimize job board and run k!work (12h cycle)"),
+            ("visit", self.macro_visit, "🏛 Visit", "Visit shrine, talk, and use actions (2h cycle)"),
         ]
 
         for key, var, label, desc in macro_info:
             row = tk.Frame(macros_section, bg=C["card2"])
             row.pack(fill="x", padx=12, pady=3)
-
-            # Toggle switch frame
             toggle_frame = tk.Frame(row, bg=C["card2"])
             toggle_frame.pack(side="right", padx=(8, 0))
-
-            toggle = _ToggleSwitch(toggle_frame, var, on_color=C["accent3"], off_color=C["muted"])
-            toggle.pack()
-
-            # Label + description
+            _ToggleSwitch(toggle_frame, var, on_color=C["accent3"], off_color=C["muted"]).pack()
             info_frame = tk.Frame(row, bg=C["card2"])
             info_frame.pack(side="left", fill="x", expand=True)
             tk.Label(info_frame, text=label, font=("Segoe UI", 10, "bold"),
@@ -562,48 +580,88 @@ class AccountPanel:
             tk.Label(info_frame, text=desc, font=("Segoe UI", 8),
                      bg=C["card2"], fg=C["muted"], anchor="w").pack(anchor="w")
 
-        tk.Frame(macros_section, bg=C["card2"], height=8).pack()
+        tk.Frame(macros_section, bg=C["card2"], height=6).pack()
 
-        # ── Quick actions ──
-        quick_section = tk.Frame(win, bg=C["card2"])
-        quick_section.pack(fill="x", padx=20, pady=(0, 12))
-        tk.Label(quick_section, text="QUICK ACTIONS", font=("Segoe UI", 8, "bold"),
-                 bg=C["card2"], fg=C["muted"]).pack(anchor="w", padx=12, pady=(10, 6))
-
-        quick_btns = tk.Frame(quick_section, bg=C["card2"])
+        # Quick actions
+        quick_btns = tk.Frame(macros_section, bg=C["card2"])
         quick_btns.pack(fill="x", padx=12, pady=(0, 10))
 
         def enable_all():
             for _, v, _, _ in macro_info:
                 v.set(True)
-            self.app.save_all()
-
         def disable_all():
             for _, v, _, _ in macro_info:
                 v.set(False)
-            self.app.save_all()
-
         def drops_only():
             for k, v, _, _ in macro_info:
                 v.set(k in ("drop", "grab"))
-            self.app.save_all()
 
         _btn(quick_btns, "Enable All", enable_all, C["accent3"], small=True).pack(side="left", padx=(0, 6))
         _btn(quick_btns, "Disable All", disable_all, C["red"], small=True).pack(side="left", padx=(0, 6))
         _btn(quick_btns, "Drops Only", drops_only, C["accent"], small=True).pack(side="left", padx=(0, 6))
 
-        # ── Advanced settings (vote mode, jitter, etc.) ──
-        adv_section = tk.Frame(win, bg=C["card2"])
-        adv_section.pack(fill="x", padx=20, pady=(0, 12))
-        tk.Label(adv_section, text="ADVANCED", font=("Segoe UI", 8, "bold"),
+        # ════════════════════════════════════════════
+        #  DROP SETTINGS
+        # ════════════════════════════════════════════
+        drop_section = tk.Frame(content, bg=C["card2"])
+        drop_section.pack(fill="x", padx=20, pady=(0, 10))
+        tk.Label(drop_section, text="DROP SETTINGS", font=("Segoe UI", 8, "bold"),
                  bg=C["card2"], fg=C["muted"]).pack(anchor="w", padx=12, pady=(10, 6))
 
-        adv_grid = tk.Frame(adv_section, bg=C["card2"])
-        adv_grid.pack(fill="x", padx=12, pady=(0, 10))
+        drop_grid = tk.Frame(drop_section, bg=C["card2"])
+        drop_grid.pack(fill="x", padx=12, pady=(0, 10))
 
-        tk.Label(adv_grid, text="Vote Mode:", font=("Segoe UI", 9),
+        # Max Drops
+        tk.Label(drop_grid, text="Max Drops / Day", font=("Segoe UI", 9),
                  bg=C["card2"], fg=C["text"]).grid(row=0, column=0, sticky="w", pady=2)
-        vote_menu = tk.OptionMenu(adv_grid, self.vote_mode_var, "auto", "semi", "off")
+        tk.Spinbox(drop_grid, from_=1, to=48, textvariable=self.max_drops_var,
+                   width=5, bg=C["dark"], fg=C["text"], relief="flat",
+                   font=("Segoe UI", 10), buttonbackground=C["card"],
+                   ).grid(row=0, column=1, sticky="w", padx=(8, 0), pady=2, ipady=3)
+
+        # Jitter Min
+        tk.Label(drop_grid, text="Jitter Min (mins)", font=("Segoe UI", 9),
+                 bg=C["card2"], fg=C["text"]).grid(row=1, column=0, sticky="w", pady=2)
+        tk.Spinbox(drop_grid, from_=0, to=30, textvariable=self.jitter_min_var,
+                   width=5, bg=C["dark"], fg=C["text"], relief="flat",
+                   font=("Segoe UI", 10), buttonbackground=C["card"],
+                   ).grid(row=1, column=1, sticky="w", padx=(8, 0), pady=2, ipady=3)
+
+        # Jitter Max
+        tk.Label(drop_grid, text="Jitter Max (mins)", font=("Segoe UI", 9),
+                 bg=C["card2"], fg=C["text"]).grid(row=2, column=0, sticky="w", pady=2)
+        tk.Spinbox(drop_grid, from_=0, to=60, textvariable=self.jitter_max_var,
+                   width=5, bg=C["dark"], fg=C["text"], relief="flat",
+                   font=("Segoe UI", 10), buttonbackground=C["card"],
+                   ).grid(row=2, column=1, sticky="w", padx=(8, 0), pady=2, ipady=3)
+
+        # Auto Burn toggle
+        burn_row = tk.Frame(drop_section, bg=C["card2"])
+        burn_row.pack(fill="x", padx=12, pady=(0, 10))
+        burn_toggle_frame = tk.Frame(burn_row, bg=C["card2"])
+        burn_toggle_frame.pack(side="right", padx=(8, 0))
+        _ToggleSwitch(burn_toggle_frame, self.auto_burn_var, on_color=C["red"], off_color=C["muted"]).pack()
+        burn_info = tk.Frame(burn_row, bg=C["card2"])
+        burn_info.pack(side="left", fill="x", expand=True)
+        tk.Label(burn_info, text="🔥 Auto Burn", font=("Segoe UI", 10, "bold"),
+                 bg=C["card2"], fg=C["text"], anchor="w").pack(anchor="w")
+        tk.Label(burn_info, text="Burn low-wish high-print cards after grabbing (k!burn)",
+                 font=("Segoe UI", 8), bg=C["card2"], fg=C["muted"], anchor="w").pack(anchor="w")
+
+        # ════════════════════════════════════════════
+        #  VOTE SETTINGS
+        # ════════════════════════════════════════════
+        vote_section = tk.Frame(content, bg=C["card2"])
+        vote_section.pack(fill="x", padx=20, pady=(0, 10))
+        tk.Label(vote_section, text="VOTE SETTINGS", font=("Segoe UI", 8, "bold"),
+                 bg=C["card2"], fg=C["muted"]).pack(anchor="w", padx=12, pady=(10, 6))
+
+        vote_grid = tk.Frame(vote_section, bg=C["card2"])
+        vote_grid.pack(fill="x", padx=12, pady=(0, 10))
+
+        tk.Label(vote_grid, text="Vote Mode", font=("Segoe UI", 9),
+                 bg=C["card2"], fg=C["text"]).grid(row=0, column=0, sticky="w", pady=2)
+        vote_menu = tk.OptionMenu(vote_grid, self.vote_mode_var, "auto", "semi", "off")
         vote_menu.config(bg=C["dark"], fg=C["text"], relief="flat",
                          font=("Segoe UI", 9), activebackground=C["accent2"],
                          activeforeground=C["dark"], highlightthickness=0,
@@ -614,22 +672,69 @@ class AccountPanel:
                                  font=("Segoe UI", 9))
         vote_menu.grid(row=0, column=1, sticky="w", padx=(8, 0), pady=2)
 
+        tk.Label(vote_grid, text="Auto — headless browser   Semi — opens page   Off — skip",
+                 font=("Segoe UI", 7), bg=C["card2"], fg=C["muted"]).grid(
+                     row=1, column=0, columnspan=2, sticky="w", pady=(0, 4))
+
+        # Show Browser (debug) — admin only, hidden by default
+        self._show_browser_row = tk.Frame(vote_section, bg=C["card2"])
+        # NOT packed by default — revealed by set_admin_mode
+        show_toggle_frame = tk.Frame(self._show_browser_row, bg=C["card2"])
+        show_toggle_frame.pack(side="right", padx=(8, 0))
+        _ToggleSwitch(show_toggle_frame, self.show_browser_var, on_color=C["accent"], off_color=C["muted"]).pack()
+        show_info = tk.Frame(self._show_browser_row, bg=C["card2"])
+        show_info.pack(side="left", fill="x", expand=True)
+        tk.Label(show_info, text="🔧 Show Browser", font=("Segoe UI", 9, "bold"),
+                 bg=C["card2"], fg=C["accent"], anchor="w").pack(anchor="w")
+        tk.Label(show_info, text="Show Chrome window during auto-vote (admin/debug only)",
+                 font=("Segoe UI", 8), bg=C["card2"], fg=C["muted"], anchor="w").pack(anchor="w")
+
+        # ════════════════════════════════════════════
+        #  VISIT SETTINGS
+        # ════════════════════════════════════════════
+        visit_section = tk.Frame(content, bg=C["card2"])
+        visit_section.pack(fill="x", padx=20, pady=(0, 10))
+        tk.Label(visit_section, text="VISIT SETTINGS", font=("Segoe UI", 8, "bold"),
+                 bg=C["card2"], fg=C["muted"]).pack(anchor="w", padx=12, pady=(10, 6))
+
+        visit_grid = tk.Frame(visit_section, bg=C["card2"])
+        visit_grid.pack(fill="x", padx=12, pady=(0, 10))
+
+        tk.Label(visit_grid, text="Visit Card Code", font=("Segoe UI", 9),
+                 bg=C["card2"], fg=C["text"]).grid(row=0, column=0, sticky="w", pady=2)
+        _entry(visit_grid, self.visit_card_var, width=14).grid(
+            row=0, column=1, sticky="w", padx=(8, 0), pady=2, ipady=4)
+
+        tk.Label(visit_grid, text="Visit Tag", font=("Segoe UI", 9),
+                 bg=C["card2"], fg=C["text"]).grid(row=1, column=0, sticky="w", pady=2)
+        _entry(visit_grid, self.visit_tag_var, width=14).grid(
+            row=1, column=1, sticky="w", padx=(8, 0), pady=2, ipady=4)
+
+        tk.Label(visit_grid, text="Card code pins a specific card. Tag prioritises cards with that tag.",
+                 font=("Segoe UI", 7), bg=C["card2"], fg=C["muted"]).grid(
+                     row=2, column=0, columnspan=2, sticky="w", pady=(0, 4))
+
+        # ════════════════════════════════════════════
+        #  SAVE & CLOSE
+        # ════════════════════════════════════════════
+        btn_frame = tk.Frame(content, bg=C["bg"])
+        btn_frame.pack(fill="x", padx=20, pady=(8, 20))
+
         def close_and_save():
             self.app.save_all()
             win.destroy()
 
-        _btn(win, "Save & Close", close_and_save, C["accent"]).pack(pady=(12, 16))
+        _btn(btn_frame, "Save & Close", close_and_save, C["accent"]).pack()
 
     # ── Admin mode toggle ──
     def set_admin_mode(self, is_admin):
         if is_admin:
             self.debug_frame.pack(fill="x", before=self._bottom_spacer)
-            self.show_browser_cb.grid(row=self._show_browser_row,
-                                       column=self._show_browser_col,
-                                       sticky="w", padx=(8, 0), pady=(2, 0))
+            self._show_browser_row.pack(fill="x", padx=12, pady=(0, 10))
         else:
             self.debug_frame.pack_forget()
-            self.show_browser_cb.grid_forget()
+            self._show_browser_row.pack_forget()
+            self.show_browser_var.set(False)  # reset so it can't persist after logout
 
     # ── UI helpers ──
     def ui_log(self, msg):
@@ -751,6 +856,7 @@ class AccountPanel:
             "show_browser":    self.show_browser_var.get(),
             "visit_card_code": self.visit_card_var.get().strip(),
             "visit_tag":       self.visit_tag_var.get().strip(),
+            "auto_burn":       self.auto_burn_var.get(),
             "enabled":         True,
             "macros": {
                 "daily":  self.macro_daily.get(),
@@ -822,6 +928,7 @@ class KarutaApp:
     def __init__(self, root):
         self.root = root
         self.root.title(f"{APP_NAME}  v{APP_VERSION}")
+        _apply_scrollbar_style(root)
         self.root.geometry("780x820")
         self.root.minsize(700, 600)
         self.root.configure(bg=C["bg"])
@@ -870,10 +977,8 @@ class KarutaApp:
         scroll_container.pack(fill="both", expand=True, pady=(8, 0))
 
         canvas = tk.Canvas(scroll_container, bg=C["bg"], highlightthickness=0, bd=0)
-        scrollbar = tk.Scrollbar(scroll_container, orient="vertical",
-                                 command=canvas.yview,
-                                 bg=C["bg"], troughcolor=C["bg"],
-                                 activebackground=C["accent"])
+        scrollbar = _themed_scrollbar(scroll_container, orient="vertical",
+                                   command=canvas.yview)
         canvas.configure(yscrollcommand=scrollbar.set)
 
         scrollbar.pack(side="right", fill="y")
