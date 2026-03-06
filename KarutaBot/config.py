@@ -55,6 +55,7 @@ def default_account():
         "show_browser": False,
         "visit_card_code": "",
         "visit_tag":  "visit",
+        "auto_burn":  False,
         "enabled":    True,
         # ── Per-account macro toggles ──
         "macros": {

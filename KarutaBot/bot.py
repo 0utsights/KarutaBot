@@ -12,7 +12,7 @@ import random
 import time
 import webbrowser
 from datetime import datetime, timedelta
-from config import KARUTA_ID, DROP_COOLDOWN_MIN, DROP_JITTER_MIN, DROP_JITTER_MAX
+from config import KARUTA_ID, DROP_JITTER_MIN, DROP_JITTER_MAX
 
 LU_COOLDOWN_SECS = 11  # k!lu has a 10s cooldown — we wait 11 to be safe
 
@@ -234,8 +234,40 @@ async def automation_loop(app, client, channel_id):
             await asyncio.sleep(2)
             reminders = await fetch_reminders(app, client, channel)
 
-            # Sleep until next drop (+ jitter)
-            base_secs = reminders.get("Drop") or (DROP_COOLDOWN_MIN * 60)
+            # ── Dynamic sleep — wait for shortest enabled macro cooldown ──
+            # Cooldown fallbacks (seconds) when reminder is unknown:
+            #   drop=30m, visit=2h, vote=12h, work=12h, daily=24h
+            MACRO_COOLDOWNS = {
+                "Drop":  ("macro_drop",  30 * 60),
+                "Visit": ("macro_visit", 2 * 3600),
+                "Vote":  ("macro_vote",  12 * 3600),
+                "Work":  ("macro_work",  12 * 3600),
+                "Daily": ("macro_daily", 24 * 3600),
+            }
+
+            candidates = []
+            for key, (attr, fallback) in MACRO_COOLDOWNS.items():
+                macro_var = getattr(app, attr, None)
+                if not (macro_var and macro_var.get()):
+                    continue  # macro disabled — skip
+
+                rem = reminders.get(key)
+                if rem is None:
+                    # Unknown — use fallback cooldown
+                    candidates.append((key, fallback))
+                elif rem == 0:
+                    # Ready now — still just ran it, use fallback as next cycle
+                    candidates.append((key, fallback))
+                else:
+                    candidates.append((key, int(rem)))
+
+            if not candidates:
+                # No macros enabled — sleep 30 min default
+                base_secs = 30 * 60
+                shortest_key = "idle"
+            else:
+                shortest_key, base_secs = min(candidates, key=lambda x: x[1])
+
             jitter_min = getattr(app, "jitter_min_var", None)
             jitter_max = getattr(app, "jitter_max_var", None)
             j_min  = (jitter_min.get() if jitter_min else DROP_JITTER_MIN) * 60
@@ -249,8 +281,8 @@ async def automation_loop(app, client, channel_id):
             rem_mins = int(base_secs // 60)
             tot_mins = int(delay // 60)
             tot_secs = int(delay % 60)
-            app.ui_log(f"⏱ Next drop in {tot_mins}m {tot_secs}s "
-                       f"(cooldown {rem_mins}m + {int(jitter//60)}m jitter)")
+            app.ui_log(f"⏱ Next cycle in {tot_mins}m {tot_secs}s "
+                       f"({shortest_key} cooldown {rem_mins}m + {int(jitter//60)}m jitter)")
             await asyncio.sleep(delay)
 
         except discord.HTTPException as exc:
@@ -431,11 +463,8 @@ async def do_drop(app, client, channel):
         for card in cards:
             if card["print"] < 100:
                 continue
-            query = card["name"]
-            if card.get("series"):
-                query += f" {card['series']}"
-            app.ui_log(f"🔎 Looking up: {query}")
-            result = await lookup_wishes(app, client, channel, query)
+            app.ui_log(f"🔎 Looking up: {card['name']!r} (series: {card.get('series') or 'unknown'})")
+            result = await lookup_wishes(app, client, channel, card["name"], card.get("series"))
             card["wishes"] = result  # None = lookup failed, 0 = found with 0 wishes
 
         # Pick + grab
@@ -456,7 +485,7 @@ async def do_drop(app, client, channel):
 
             # Check burn eligibility
             await asyncio.sleep(3)
-            await maybe_tag_burn(app, client, channel, best)
+            await maybe_burn(app, client, channel, best)
 
     except Exception:
         import traceback
@@ -482,7 +511,7 @@ async def wait_for_drop(client, channel, timeout=15):
 #  k!lu with cooldown handling
 # ─────────────────────────────────────────────
 async def _send_lu(app, client, channel, card_name):
-    """Send k!lu, handle cooldown errors, return the response message or None."""
+    """Send k!lu <name only>, handle cooldown errors, return the response message or None."""
     elapsed = time.time() - getattr(app, "_last_lu_time", 0)
     if elapsed < LU_COOLDOWN_SECS:
         wait = LU_COOLDOWN_SECS - elapsed
@@ -515,7 +544,7 @@ async def _send_lu(app, client, channel, card_name):
 
 
 def _parse_wishes(msg):
-    """Extract wishlist count from a k!lu response message. Returns int or None."""
+    """Extract wishlist count from a single-card k!lu response. Returns int or None."""
     if not msg or not msg.embeds:
         return None
     for embed in msg.embeds:
@@ -529,31 +558,157 @@ def _parse_wishes(msg):
     return None
 
 
-async def lookup_wishes(app, client, channel, card_name):
+def _dump_lu_msg(app, msg):
+    """Log the full raw content of a k!lu response for debugging."""
+    app.ui_log(f"   [DBG] msg.content: {repr(msg.content)}")
+    for i, embed in enumerate(msg.embeds):
+        app.ui_log(f"   [DBG] embed[{i}] title:  {repr(embed.title)}")
+        app.ui_log(f"   [DBG] embed[{i}] desc:   {repr(embed.description)}")
+        for j, f in enumerate(embed.fields):
+            app.ui_log(f"   [DBG] embed[{i}] field[{j}]: name={repr(f.name)} value={repr(f.value)}")
+
+
+def _is_multi_result(msg):
+    """Return True if this k!lu response is a character-select list (multiple results)."""
+    if not msg:
+        return False
+    content = msg.content or ""
+    # Karuta says "please select a character using the menu below"
+    if "please select a character" in content.lower():
+        return True
+    if not msg.embeds:
+        return False
+    for embed in msg.embeds:
+        text = str(embed.description or "") + str(embed.title or "")
+        if "please select a character" in text.lower():
+            return True
+        # Numbered list pattern: "`1`. `♡N`" — strong signal it's a results list
+        if re.search(r'`\d+`\.\s*`♡\d+`', text):
+            return True
+    return False
+
+
+def _parse_multi_result(app, msg, series_hint):
     """
-    Look up wishlist count for a card name.
-    If k!lu says 'could not be found', automatically retry with OCR-correction
-    variants (W/N swap, u/v swap) before giving up.
-    Returns wishlist count, or None if lookup definitively failed (not found after retries).
-    Returns 0 if lookup succeeded but card has 0 wishlists.
+    Parse a Karuta character-select screen and return the best matching wishlist count.
+
+    Each line looks like:
+      `1`. `♡55` · My Deer Friend Nokotan · Torako Koshi
+      `2`. `♡7` · Assassination Classroom · Rio Nakamura
+
+    Strategy:
+      1. If series_hint is set, pick the entry whose series best matches it.
+      2. Tie-break (or no hint): pick the entry with the highest wishlist count.
+
+    Returns (wishes: int, matched_series: str, matched_name: str) or None on parse failure.
+    """
+    if not msg:
+        return None
+
+    # Dump raw message so we can see exactly what Karuta sent
+    _dump_lu_msg(app, msg)
+
+    # Gather all text — content + all embed descriptions + all field values
+    full_text = msg.content or ""
+    for embed in msg.embeds:
+        full_text += "\n" + (embed.description or "")
+        for f in embed.fields:
+            full_text += "\n" + (f.name or "") + "\n" + (f.value or "")
+
+    app.ui_log(f"   [DBG] full_text for parsing: {repr(full_text[:500])}")
+
+    # Parse every entry line: `N`. `♡W` · Series · Character
+    # Normalise middot variants and handle both backtick and plain formats
+    entries = []
+    for line in full_text.splitlines():
+        line = line.strip()
+        line = line.replace('\u00b7', '·').replace('\u2022', '·').replace('\u2027', '·')
+        # Primary format:  `1`. `♡55` · Series · Name
+        m = re.match(r'`(\d+)`\.\s*`♡(\d+)`\s*[·\-]\s*(.+)', line)
+        if not m:
+            # Fallback — backticks stripped by some clients:  1. ♡55 · Series · Name
+            m = re.match(r'(\d+)\.\s*♡(\d+)\s*[·\-]\s*(.+)', line)
+        if not m:
+            continue
+        idx    = int(m.group(1))
+        wishes = int(m.group(2))
+        rest   = m.group(3).strip()
+        parts  = [p.strip() for p in re.split(r'\s*·\s*', rest)]
+        if len(parts) >= 2:
+            series = parts[0]
+            name   = parts[-1]
+        else:
+            series = ""
+            name   = rest
+        app.ui_log(f"   [DBG] entry: #{idx} ♡{wishes} series={series!r} name={name!r}")
+        entries.append({"idx": idx, "wishes": wishes, "series": series, "name": name})
+
+    if not entries:
+        return None
+
+    # Score each entry: series similarity + wishlist tiebreak
+    def _series_score(entry):
+        if not series_hint:
+            return 0
+        hint_words = set(re.findall(r'\w+', series_hint.lower()))
+        cand_words = set(re.findall(r'\w+', entry["series"].lower()))
+        if not hint_words:
+            return 0
+        overlap = len(hint_words & cand_words)
+        return overlap / len(hint_words)
+
+    best = max(entries, key=lambda e: (_series_score(e), e["wishes"]))
+    return best["wishes"], best["series"], best["name"]
+
+
+async def lookup_wishes(app, client, channel, card_name, series_hint=None):
+    """
+    Look up wishlist count for a card using its name only (not name + series).
+
+    Flow:
+      1. Send k!lu <name>
+      2a. Single-card result  → parse Wishlisted field directly (existing path)
+      2b. Multi-result screen → parse the numbered list, match series via series_hint,
+                                pick best wishlist count
+      2c. Not found           → retry OCR correction variants
+      2d. Timeout / failure   → return None
+
+    Returns wishlist count (int), or None if lookup definitively failed.
     """
     msg = await _send_lu(app, client, channel, card_name)
 
-    # Check if Karuta said "not found"
+    # ── Not found — try OCR correction variants ──
     if msg and "could not be found" in msg.content.lower():
         app.ui_log(f"   ⚠ k!lu not found for {card_name!r} — trying OCR variants...")
         for variant in _make_lu_variants(card_name):
             app.ui_log(f"   🔄 Retrying with: {variant!r}")
             msg = await _send_lu(app, client, channel, variant)
-            if msg and "could not be found" not in msg.content.lower():
-                count = _parse_wishes(msg)
-                if count is not None:
-                    app.ui_log(f"   ♥ Wishlisted: {count} (via variant {variant!r})")
-                    return count
-        # All variants failed — return None to signal lookup failure
-        app.ui_log(f"   ⚠ All variants failed — skipping burn check for safety")
+            if not msg:
+                continue
+            if "could not be found" in msg.content.lower():
+                continue
+            # Could be single or multi — fall through to the checks below
+            card_name = variant
+            break
+        else:
+            app.ui_log(f"   ⚠ All variants failed — skipping burn check for safety")
+            return None
+
+    if not msg:
         return None
 
+    # ── Multi-result character select screen ──
+    if _is_multi_result(msg):
+        app.ui_log(f"   📋 Multiple results returned — matching against series: {series_hint!r}")
+        result = _parse_multi_result(app, msg, series_hint)
+        if result is not None:
+            wishes, matched_series, matched_name = result
+            app.ui_log(f"   ♥ Matched: {matched_name!r} ({matched_series}) — ♡{wishes}")
+            return wishes
+        app.ui_log("   ⚠ Could not parse multi-result screen — treating as unknown")
+        return None
+
+    # ── Normal single-card result ──
     count = _parse_wishes(msg)
     if count is not None:
         app.ui_log(f"   ♥ Wishlisted: {count}")
@@ -564,35 +719,45 @@ async def lookup_wishes(app, client, channel, card_name):
 
 
 # ─────────────────────────────────────────────
-#  Burn tagging (no k!burn — safe)
+#  Burn — actual k!burn (not just tagging)
 # ─────────────────────────────────────────────
-async def maybe_tag_burn(app, client, channel, card):
-    # None wishes means lookup failed — never burn-tag unknown cards
+async def maybe_burn(app, client, channel, card):
+    """Burn a low-wish high-print card if auto_burn is enabled."""
+    auto_burn = getattr(app, "auto_burn_var", None)
+    if not (auto_burn and auto_burn.get()):
+        return
+
+    # None wishes means lookup failed — never burn unknown cards
     if card.get("wishes") is None:
-        app.ui_log(f"   ⏭ Skipping burn tag — wishlist unknown (lookup failed)")
+        app.ui_log(f"   ⏭ Skipping burn — wishlist unknown (lookup failed)")
         return
     if not (card.get("print", 99999) > 100 and card.get("wishes", 0) < 10):
         return
 
     app.ui_log(f"🔥 {card['name']} eligible for burn (#{card['print']}, "
-               f"{card['wishes']} wishes) — tagging...")
+               f"{card['wishes']} wishes) — burning...")
 
-    await send_safe(channel, "k!tag burn", app)
+    await send_safe(channel, "k!burn", app)
 
     def check(m):
         return (m.channel.id == channel.id and m.author.id == KARUTA_ID)
     try:
         msg = await client.wait_for("message", check=check, timeout=10)
-        if "does not exist" in msg.content.lower():
-            app.ui_log("   📌 Creating 'burn' tag...")
-            await send_safe(channel, "k!tagcreate burn :fire:", app)
-            await asyncio.sleep(2)
-            await send_safe(channel, "k!tag burn", app)
-            app.ui_log("   ✅ Tagged for burn.")
-        else:
-            app.ui_log("   ✅ Tagged for burn.")
+        # Karuta may ask for confirmation — look for a checkmark button
+        for row in getattr(msg, "components", []):
+            for btn in row.children:
+                emoji_str = str(getattr(btn, "emoji", "") or "")
+                if "white_check_mark" in emoji_str or "✅" in emoji_str or "buttonconfirm" in emoji_str:
+                    try:
+                        await btn.click()
+                        app.ui_log(f"   ✅ Burned {card['name']}.")
+                        return
+                    except Exception as e:
+                        app.ui_log(f"   ⚠ Burn confirm failed: {e}")
+                        return
+        app.ui_log(f"   ✅ Burn command sent for {card['name']}.")
     except asyncio.TimeoutError:
-        app.ui_log("   ⚠ Tag response timed out")
+        app.ui_log("   ⚠ Burn response timed out")
 
 
 
