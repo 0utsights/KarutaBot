@@ -27,7 +27,7 @@ def show_key_screen():
     status = tk.Label(win, text="", font=("Helvetica", 9), bg=C["bg"], fg=C["red"])
     status.pack(pady=(6, 0))
 
-    result = {"key": None}
+    result = {"key": None, "features": {}}
 
     def try_activate(event=None):
         key = key_var.get().strip()
@@ -35,9 +35,10 @@ def show_key_screen():
             return
         status.config(text="Validating...", fg=C["muted"])
         win.update()
-        success, reason, _ = validate_key(key)
+        success, reason, features = validate_key(key)
         if success:
             result["key"] = key
+            result["features"] = features
             win.destroy()
         else:
             status.config(text=f"❌ {reason}", fg=C["red"])
@@ -51,18 +52,18 @@ def show_key_screen():
               command=try_activate).pack(pady=12)
 
     win.mainloop()
-    return result["key"]
+    return result["key"], result["features"]
 
 
 def launch():
-    key = show_key_screen()
+    key, features = show_key_screen()
     if not key:
         return
 
     threading.Thread(target=start_heartbeat, args=(key,), daemon=True).start()
 
     root = tk.Tk()
-    app  = KarutaApp(root)
+    app  = KarutaApp(root, features=features)
     root.protocol("WM_DELETE_WINDOW", lambda: [release_key(key), root.destroy()])
     root.mainloop()
 
