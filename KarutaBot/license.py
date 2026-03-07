@@ -26,8 +26,8 @@ def get_tier() -> str | None:
 
 def get_features() -> dict:
     """Return the feature dict for the current tier, e.g.:
-    {"drop": True, "grab": True, "daily": False, "vote": False,
-     "work": False, "visit": False, "multi_account": False}
+    semi: {"drop": True, "grab": True, "daily": False, ..., "multi_account": False}
+    full: {"drop": True, "grab": True, "daily": True,  ..., "multi_account": True}
     Falls back to an empty dict if no key has been validated yet.
     """
     return dict(_features)
@@ -62,7 +62,7 @@ def validate_key(key: str) -> tuple[bool, str, dict]:
 
     # ── Store session state ──────────────────────────────
     _active_key = key.upper().strip()
-    _tier       = data.get("tier", "basic")
+    _tier       = data.get("tier", "semi")
     _features   = data.get("features", {})
 
     return True, "OK", dict(_features)
@@ -70,6 +70,12 @@ def validate_key(key: str) -> tuple[bool, str, dict]:
 
 # ── Heartbeat ────────────────────────────────────────────
 def start_heartbeat(key: str, interval: int = 60) -> None:
+    """Re-validates the key every `interval` seconds from a daemon thread.
+    If the server returns non-200 (key revoked, expired, etc.) the process
+    is killed immediately via os._exit so there's no way to keep running
+    on a bad key even if the UI is already open.
+    Network errors are ignored so a brief connection blip won't kill the app.
+    """
     import os
     while True:
         time.sleep(interval)
