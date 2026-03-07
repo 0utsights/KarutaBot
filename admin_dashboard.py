@@ -148,9 +148,9 @@ class AdminDashboard:
 
         tk.Label(right, text="Tier", font=("Helvetica", 9),
                  bg=C["surface"], fg=C["muted"]).pack(anchor="w", padx=16)
-        self.tier_var = tk.StringVar(value="basic")
+        self.tier_var = tk.StringVar(value="semi")
         tier_menu = ttk.Combobox(right, textvariable=self.tier_var,
-                                  values=["basic", "standard", "premium"],
+                                  values=["semi", "full"],
                                   state="readonly", width=20)
         tier_menu.pack(padx=16, pady=(4, 12), fill="x")
 
