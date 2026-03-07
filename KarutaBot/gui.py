@@ -291,12 +291,20 @@ class AccountPanel:
 
         # ── Per-account macro toggles ──
         macros = account_data.get("macros", {})
-        self.macro_daily  = tk.BooleanVar(value=macros.get("daily", True))
-        self.macro_vote   = tk.BooleanVar(value=macros.get("vote", True))
-        self.macro_work   = tk.BooleanVar(value=macros.get("work", True))
-        self.macro_drop   = tk.BooleanVar(value=macros.get("drop", True))
-        self.macro_grab   = tk.BooleanVar(value=macros.get("grab", True))
-        self.macro_visit  = tk.BooleanVar(value=macros.get("visit", True))
+        feats  = getattr(app, "features", {})
+
+        def _macro_val(key: str, default: bool = True) -> bool:
+            """Saved user preference, clamped to what the tier allows."""
+            if not feats.get(key, True):
+                return False
+            return macros.get(key, default)
+
+        self.macro_daily  = tk.BooleanVar(value=_macro_val("daily"))
+        self.macro_vote   = tk.BooleanVar(value=_macro_val("vote"))
+        self.macro_work   = tk.BooleanVar(value=_macro_val("work"))
+        self.macro_drop   = tk.BooleanVar(value=_macro_val("drop"))
+        self.macro_grab   = tk.BooleanVar(value=_macro_val("grab"))
+        self.macro_visit  = tk.BooleanVar(value=_macro_val("visit"))
 
         self._build(parent)
         self._update_timer()
@@ -565,17 +573,32 @@ class AccountPanel:
             ("visit", self.macro_visit, "🏛 Visit", "Visit shrine, talk, and use actions (2h cycle)"),
         ]
 
+        feats = getattr(self.app, "features", {})
+
         for key, var, label, desc in macro_info:
+            allowed = feats.get(key, True)
             row = tk.Frame(macros_section, bg=C["card2"])
             row.pack(fill="x", padx=12, pady=3)
+
             toggle_frame = tk.Frame(row, bg=C["card2"])
             toggle_frame.pack(side="right", padx=(8, 0))
-            _ToggleSwitch(toggle_frame, var, on_color=C["accent3"], off_color=C["muted"]).pack()
+
+            if allowed:
+                _ToggleSwitch(toggle_frame, var, on_color=C["accent3"], off_color=C["muted"]).pack()
+            else:
+                # Locked — show a static "UPGRADE" badge instead of the toggle
+                tk.Label(toggle_frame, text="UPGRADE",
+                         font=("Segoe UI", 7, "bold"),
+                         bg=C["yellow"], fg=C["dark"],
+                         padx=6, pady=2).pack()
+
             info_frame = tk.Frame(row, bg=C["card2"])
             info_frame.pack(side="left", fill="x", expand=True)
+            fg_label = C["text"] if allowed else C["muted"]
             tk.Label(info_frame, text=label, font=("Segoe UI", 10, "bold"),
-                     bg=C["card2"], fg=C["text"], anchor="w").pack(anchor="w")
-            tk.Label(info_frame, text=desc, font=("Segoe UI", 8),
+                     bg=C["card2"], fg=fg_label, anchor="w").pack(anchor="w")
+            desc_text = desc if allowed else f"{desc}  [not available on your plan]"
+            tk.Label(info_frame, text=desc_text, font=("Segoe UI", 8),
                      bg=C["card2"], fg=C["muted"], anchor="w").pack(anchor="w")
 
         tk.Frame(macros_section, bg=C["card2"], height=6).pack()
@@ -585,14 +608,15 @@ class AccountPanel:
         quick_btns.pack(fill="x", padx=12, pady=(0, 10))
 
         def enable_all():
-            for _, v, _, _ in macro_info:
-                v.set(True)
+            for k, v, _, _ in macro_info:
+                if feats.get(k, True):
+                    v.set(True)
         def disable_all():
             for _, v, _, _ in macro_info:
                 v.set(False)
         def drops_only():
             for k, v, _, _ in macro_info:
-                v.set(k in ("drop", "grab"))
+                v.set(k in ("drop", "grab") and feats.get(k, True))
 
         _btn(quick_btns, "Enable All", enable_all, C["accent3"], small=True).pack(side="left", padx=(0, 6))
         _btn(quick_btns, "Disable All", disable_all, C["red"], small=True).pack(side="left", padx=(0, 6))
@@ -923,13 +947,23 @@ class AccountPanel:
 #  KarutaApp — main window
 # ─────────────────────────────────────────────────────────────────────────────
 class KarutaApp:
-    def __init__(self, root):
+    def __init__(self, root, features: dict | None = None):
         self.root = root
         self.root.title(f"{APP_NAME}  v{APP_VERSION}")
         _apply_scrollbar_style(root)
         self.root.geometry("780x820")
         self.root.minsize(700, 600)
         self.root.configure(bg=C["bg"])
+
+        # ── Tier feature gates ─────────────────────────────
+        # Keys: drop, grab, daily, vote, work, visit, multi_account
+        # Default to full access so the app still works without a features dict
+        # (dev mode / legacy keys).
+        self.features = features or {
+            "drop": True, "grab": True, "daily": True,
+            "vote": True, "work": True, "visit": True,
+            "multi_account": True,
+        }
 
         self.config     = load_config()
         self.panels     = []
@@ -963,7 +997,8 @@ class KarutaApp:
         tr.pack(side="right", padx=16)
 
         _btn(tr, "⚙ Settings", self._open_settings, C["card2"], small=True).pack(side="left", padx=4)
-        _btn(tr, "+ Add Account", self.add_account, C["accent"], small=True).pack(side="left", padx=4)
+        if self.features.get("multi_account"):
+            _btn(tr, "+ Add Account", self.add_account, C["accent"], small=True).pack(side="left", padx=4)
         _btn(tr, "📂 Import",     self.import_config, C["card2"], small=True).pack(side="left", padx=4)
         _btn(tr, "💾 Export",     self.export_config, C["card2"], small=True).pack(side="left", padx=4)
         _btn(tr, "❓ Token Help",  self.show_token_help, C["card2"], small=True).pack(side="left", padx=4)
@@ -1173,6 +1208,15 @@ class KarutaApp:
         if not accounts:
             messagebox.showwarning("Import", "No accounts found in file.")
             return
+
+        # Enforce single-account limit for non-multi_account tiers
+        if not self.features.get("multi_account") and len(accounts) > 1:
+            messagebox.showwarning(
+                "Import Limited",
+                f"Your plan only supports 1 account.\n"
+                f"Only the first account from the file will be imported.",
+            )
+            accounts = accounts[:1]
 
         confirm = messagebox.askyesno(
             "Import Config",
