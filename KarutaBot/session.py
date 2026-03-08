@@ -9,8 +9,9 @@ sent via Authorization header using the active license key as identity).
 
 import threading
 import requests
+import license
 from config import SERVER_URL
-from license import get_tier, _active_key
+
 
 # Tracks active session IDs per account name so stop() knows what to close
 _sessions: dict[str, str] = {}
@@ -19,22 +20,17 @@ _lock = threading.Lock()
 
 def _headers() -> dict:
     """Use the active license key as a bearer token for bot → API calls."""
-    key = _active_key
+    key = license._active_key   # access at call time, not import time
     if key:
         return {"Authorization": f"Bearer {key}", "Content-Type": "application/json"}
     return {"Content-Type": "application/json"}
 
 
 def start(account_name: str) -> str | None:
-    """
-    Tell the API a session has started for this account.
-    Returns the session_id string, or None if the call failed.
-    Runs synchronously — call from a thread if needed (start_bot already runs in one).
-    """
     try:
         res = requests.post(
             f"{SERVER_URL}/api/sessions/start",
-            json={"account_name": account_name, "tier": get_tier() or "semi"},
+            json={"account_name": account_name, "tier": license.get_tier() or "semi"},
             headers=_headers(),
             timeout=8,
         )
@@ -43,23 +39,23 @@ def start(account_name: str) -> str | None:
             if session_id:
                 with _lock:
                     _sessions[account_name] = session_id
+                print(f"[session] Started: {session_id}")
             return session_id
-    except Exception:
-        pass  # Never crash the bot over stats
+        else:
+            print(f"[session] start failed: {res.status_code} {res.text}")
+    except Exception as e:
+        print(f"[session] start error: {e}")
     return None
 
 
 def end(account_name: str, drops_done: int, cards_grabbed: int) -> None:
-    """
-    Tell the API a session has ended with final stats.
-    Safe to call even if start() failed — silently no-ops if no session_id.
-    """
     with _lock:
         session_id = _sessions.pop(account_name, None)
     if not session_id:
+        print(f"[session] end called but no session_id for '{account_name}' — was start() called?")
         return
     try:
-        requests.post(
+        res = requests.post(
             f"{SERVER_URL}/api/sessions/end",
             json={
                 "session_id": session_id,
@@ -69,5 +65,9 @@ def end(account_name: str, drops_done: int, cards_grabbed: int) -> None:
             headers=_headers(),
             timeout=8,
         )
-    except Exception:
-        pass  # Never crash the bot over stats
+        if res.status_code == 200:
+            print(f"[session] Ended: {drops_done} drops, {cards_grabbed} grabs")
+        else:
+            print(f"[session] end failed: {res.status_code} {res.text}")
+    except Exception as e:
+        print(f"[session] end error: {e}")
