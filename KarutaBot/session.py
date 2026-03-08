@@ -48,7 +48,26 @@ def start(account_name: str) -> str | None:
     return None
 
 
-def end(account_name: str, drops_done: int, cards_grabbed: int) -> None:
+def heartbeat(account_name: str, drops_done: int, cards_grabbed: int) -> None:
+    """Lightweight mid-session update — no ended_at, just current counts.
+    Called every ~5 minutes from the bot loop. Fire-and-forget."""
+    with _lock:
+        session_id = _sessions.get(account_name)
+    if not session_id:
+        return
+    try:
+        requests.post(
+            f"{SERVER_URL}/api/sessions/heartbeat",
+            json={
+                "session_id": session_id,
+                "drops_done": drops_done,
+                "cards_grabbed": cards_grabbed,
+            },
+            headers=_headers(),
+            timeout=5,
+        )
+    except Exception:
+        pass  # Heartbeat failure is silent — end() will catch the final counts
     with _lock:
         session_id = _sessions.pop(account_name, None)
     if not session_id:
