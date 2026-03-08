@@ -218,10 +218,10 @@ class AdminDashboard:
             return
 
         keys = data.get("keys", [])
-        now = datetime.utcnow()
+        now = datetime.now(datetime.UTC)
 
-        for row in self.tree.get_children():
-            self.tree.delete(row)
+        # Clear all rows in one call to avoid race with auto-refresh
+        self.tree.delete(*self.tree.get_children())
 
         active = 0
         expired = 0
