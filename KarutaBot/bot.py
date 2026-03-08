@@ -478,6 +478,7 @@ async def do_drop(app, client, channel):
                 f"⭐ Grabbing card {best_idx+1}: {best['name']} "
                 f"(print: #{best['print']}, wishes: {best['wishes']})")
             await drop_msg.add_reaction(emoji)
+            app.grabbed_today = getattr(app, "grabbed_today", 0) + 1
 
             # Check burn eligibility
             await asyncio.sleep(3)
