@@ -9,6 +9,7 @@ from datetime import datetime
 from config import (C, APP_NAME, APP_VERSION, ADMIN_PASSWORD, MAX_DROPS_PER_DAY,
                     DROP_JITTER_MIN, DROP_JITTER_MAX, load_config, save_config, default_account)
 from license import start_heartbeat, release_key
+import session as session_api
 from bot import run_discord_loop, do_drop
 
 
@@ -285,6 +286,7 @@ class AccountPanel:
         self.running        = False
         self.next_drop_time = None
         self.drops_today    = 0
+        self.grabbed_today  = 0
         self.last_reset     = datetime.now().date()
         self._reminder_seconds    = {}
         self._reminder_updated_at = None
@@ -912,6 +914,8 @@ class AccountPanel:
             return
 
         self.running = True
+        self.drops_today   = 0
+        self.grabbed_today = 0
         self.start_btn.config(state="disabled")
         self.stop_btn.config(state="normal")
         self.drop_btn.config(state="normal")
@@ -924,6 +928,13 @@ class AccountPanel:
             daemon=True
         )
         self.bot_thread.start()
+        # Report session start to API in background so it doesn't delay bot startup
+        account_name = self.name_var.get().strip() or "Account"
+        threading.Thread(
+            target=session_api.start,
+            args=(account_name,),
+            daemon=True
+        ).start()
 
     def stop_bot(self):
         self.running = False
@@ -935,6 +946,13 @@ class AccountPanel:
         if self.client and self.loop:
             import asyncio
             asyncio.run_coroutine_threadsafe(self.client.close(), self.loop)
+        # Report session end with final stats
+        account_name = self.name_var.get().strip() or "Account"
+        threading.Thread(
+            target=session_api.end,
+            args=(account_name, self.drops_today, self.grabbed_today),
+            daemon=True
+        ).start()
 
     def manual_drop(self):
         if self.client and self.loop:
