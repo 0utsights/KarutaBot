@@ -193,9 +193,28 @@ async def automation_loop(app, client, channel_id):
         app.ui_log("❌ Channel not found.")
         return
 
+    import session as session_api
+    _last_heartbeat = 0
+    HEARTBEAT_INTERVAL = 300  # 5 minutes
+
     while app.running:
         try:
             app.reset_daily_if_needed()
+
+            # ── Heartbeat — fire every 5 min, non-blocking ──
+            now_ts = time.time()
+            if now_ts - _last_heartbeat >= HEARTBEAT_INTERVAL:
+                account_name = getattr(app, "name_var", None)
+                account_name = account_name.get().strip() if account_name else "Account"
+                loop = asyncio.get_event_loop()
+                loop.run_in_executor(
+                    None,
+                    session_api.heartbeat,
+                    account_name,
+                    getattr(app, "drops_today", 0),
+                    getattr(app, "grabbed_today", 0),
+                )
+                _last_heartbeat = now_ts
 
             # Fetch reminders at the top of every cycle
             reminders = await fetch_reminders(app, client, channel)
