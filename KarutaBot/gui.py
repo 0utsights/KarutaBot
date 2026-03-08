@@ -6,7 +6,7 @@ import json
 import os
 from datetime import datetime
 
-from config import (C, APP_NAME, APP_VERSION, MAX_DROPS_PER_DAY,
+from config import (C, APP_NAME, APP_VERSION, ADMIN_PASSWORD, MAX_DROPS_PER_DAY,
                     DROP_JITTER_MIN, DROP_JITTER_MAX, load_config, save_config, default_account)
 from license import start_heartbeat, release_key
 from bot import run_discord_loop, do_drop
