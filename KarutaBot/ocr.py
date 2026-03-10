@@ -25,6 +25,32 @@ DEBUG_DIR   = "ocr_debug"
 # ── EasyOCR reader (loaded once, reused) ──────────────────────────────────────
 _reader = None
 
+
+def release_reader():
+    """Release the EasyOCR model from memory. Call when bot goes on cooldown.
+    The reader reloads automatically on the next drop.
+    """
+    global _reader
+    if _reader is None:
+        return
+    try:
+        if hasattr(_reader, 'detector'):
+            del _reader.detector
+        if hasattr(_reader, 'recognizer'):
+            del _reader.recognizer
+    except Exception:
+        pass
+    del _reader
+    _reader = None
+    import gc
+    gc.collect()
+    try:
+        import torch
+        torch.cuda.empty_cache()
+    except Exception:
+        pass
+
+
 def _get_reader(log_fn=None):
     """Load EasyOCR reader, downloading model on first use (~100MB, one time)."""
     global _reader
@@ -108,6 +134,7 @@ def _clean_print(raw):
 # ── Image preprocessing ────────────────────────────────────────────────────────
 def _preprocess(img, trim_sides=0.18):
     """Trim frame edges and upscale for better OCR accuracy."""
+    from PIL import ImageEnhance
     w, h = img.size
     trim = int(w * trim_sides)
     img = img.crop((trim, 0, w - trim, h))
@@ -192,7 +219,9 @@ def parse_drop_image(image_url, log_fn=None):
             print_crop.save(os.path.join(DEBUG_DIR,  f"card{i+1}_print_processed.png"))
 
         raw_name   = _ocr_text(reader, name_crop)
+
         raw_series = _ocr_text(reader, series_crop)
+
         raw_print  = _ocr_print(reader, print_crop)
 
         log(f"Card {i+1} raw — name: {raw_name!r}  series: {raw_series!r}  print: {raw_print!r}")

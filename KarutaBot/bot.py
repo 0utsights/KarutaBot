@@ -72,16 +72,6 @@ def _make_lu_variants(name):
 # Commands we track in k!reminders
 REMINDER_KEYS = ["Daily", "Vote", "Drop", "Grab", "Work", "Visit"]
 
-# Cooldown fallbacks (seconds) when reminder is unknown:
-#   drop=30m, visit=2h, vote=12h, work=12h, daily=24h
-MACRO_COOLDOWNS = {
-    "Drop":  ("macro_drop",  30 * 60),
-    "Visit": ("macro_visit", 2 * 3600),
-    "Vote":  ("macro_vote",  12 * 3600),
-    "Work":  ("macro_work",  12 * 3600),
-    "Daily": ("macro_daily", 24 * 3600),
-}
-
 
 # ─────────────────────────────────────────────
 #  Discord runner
@@ -170,6 +160,7 @@ async def fetch_reminders(app, client, channel):
 
 def _parse_duration(text):
     """Convert 'in `2 hours 30 minutes`' -> seconds. Strips backticks."""
+    # Strip backtick formatting Karuta uses: `2 hours`
     text = text.replace("`", "")
     total = 0
     for num, unit in re.findall(r"([\d\.]+)\s*(hour|minute|second)", text, re.IGNORECASE):
@@ -193,28 +184,9 @@ async def automation_loop(app, client, channel_id):
         app.ui_log("❌ Channel not found.")
         return
 
-    import session as session_api
-    _last_heartbeat = 0
-    HEARTBEAT_INTERVAL = 300  # 5 minutes
-
     while app.running:
         try:
             app.reset_daily_if_needed()
-
-            # ── Heartbeat — fire every 5 min, non-blocking ──
-            now_ts = time.time()
-            if now_ts - _last_heartbeat >= HEARTBEAT_INTERVAL:
-                account_name = getattr(app, "name_var", None)
-                account_name = account_name.get().strip() if account_name else "Account"
-                loop = asyncio.get_event_loop()
-                loop.run_in_executor(
-                    None,
-                    session_api.heartbeat,
-                    account_name,
-                    getattr(app, "drops_today", 0),
-                    getattr(app, "grabbed_today", 0),
-                )
-                _last_heartbeat = now_ts
 
             # Fetch reminders at the top of every cycle
             reminders = await fetch_reminders(app, client, channel)
@@ -263,6 +235,16 @@ async def automation_loop(app, client, channel_id):
             reminders = await fetch_reminders(app, client, channel)
 
             # ── Dynamic sleep — wait for shortest enabled macro cooldown ──
+            # Cooldown fallbacks (seconds) when reminder is unknown:
+            #   drop=30m, visit=2h, vote=12h, work=12h, daily=24h
+            MACRO_COOLDOWNS = {
+                "Drop":  ("macro_drop",  30 * 60),
+                "Visit": ("macro_visit", 2 * 3600),
+                "Vote":  ("macro_vote",  12 * 3600),
+                "Work":  ("macro_work",  12 * 3600),
+                "Daily": ("macro_daily", 24 * 3600),
+            }
+
             candidates = []
             for key, (attr, fallback) in MACRO_COOLDOWNS.items():
                 macro_var = getattr(app, attr, None)
@@ -301,6 +283,10 @@ async def automation_loop(app, client, channel_id):
             tot_secs = int(delay % 60)
             app.ui_log(f"⏱ Next cycle in {tot_mins}m {tot_secs}s "
                        f"({shortest_key} cooldown {rem_mins}m + {int(jitter//60)}m jitter)")
+            # Release OCR model during cooldown to free ~1.6GB of memory.
+            # It reloads automatically on the next drop cycle.
+            from ocr import release_reader
+            release_reader()
             await asyncio.sleep(delay)
 
         except discord.HTTPException as exc:
@@ -338,6 +324,7 @@ async def do_vote(app, client, channel):
 
 async def _do_vote_auto(app, client, channel):
     """Fully automatic vote — headless browser, zero user interaction."""
+    # Check if user wants visible browser for debugging
     show_browser = getattr(app, "show_browser_var", None)
     show_browser = show_browser.get() if show_browser else False
     headless = not show_browser
@@ -345,12 +332,14 @@ async def _do_vote_auto(app, client, channel):
     app.ui_log("🗳 [Auto] Vote is ready — starting " +
                ("visible" if show_browser else "headless") + " vote...")
 
+    # Get the Discord token from the app panel
     token = getattr(app, "token_var", None)
     token = token.get().strip() if token else None
     if not token:
         app.ui_log("❌ [Auto] No Discord token available — cannot auto-vote")
         return
 
+    # Run the browser pipeline in a thread so we don't block the event loop.
     loop = asyncio.get_event_loop()
     try:
         from vote import auto_vote
@@ -497,7 +486,6 @@ async def do_drop(app, client, channel):
                 f"⭐ Grabbing card {best_idx+1}: {best['name']} "
                 f"(print: #{best['print']}, wishes: {best['wishes']})")
             await drop_msg.add_reaction(emoji)
-            app.grabbed_today = getattr(app, "grabbed_today", 0) + 1
 
             # Check burn eligibility
             await asyncio.sleep(3)
@@ -589,6 +577,7 @@ def _is_multi_result(msg):
     if not msg:
         return False
     content = msg.content or ""
+    # Karuta says "please select a character using the menu below"
     if "please select a character" in content.lower():
         return True
     if not msg.embeds:
@@ -620,6 +609,7 @@ def _parse_multi_result(app, msg, series_hint):
     if not msg:
         return None
 
+    # Dump raw message so we can see exactly what Karuta sent
     _dump_lu_msg(app, msg)
 
     # Gather all text — content + all embed descriptions + all field values
@@ -632,6 +622,7 @@ def _parse_multi_result(app, msg, series_hint):
     app.ui_log(f"   [DBG] full_text for parsing: {repr(full_text[:500])}")
 
     # Parse every entry line: `N`. `♡W` · Series · Character
+    # Normalise middot variants and handle both backtick and plain formats
     entries = []
     for line in full_text.splitlines():
         line = line.strip()
@@ -659,6 +650,7 @@ def _parse_multi_result(app, msg, series_hint):
     if not entries:
         return None
 
+    # Score each entry: series similarity + wishlist tiebreak
     def _series_score(entry):
         if not series_hint:
             return 0
@@ -678,7 +670,7 @@ async def lookup_wishes(app, client, channel, card_name, series_hint=None):
     Look up wishlist count for a card using its name only (not name + series).
 
     Flow:
-      1. Send k!lu <n>
+      1. Send k!lu <name>
       2a. Single-card result  → parse Wishlisted field directly (existing path)
       2b. Multi-result screen → parse the numbered list, match series via series_hint,
                                 pick best wishlist count
@@ -699,6 +691,7 @@ async def lookup_wishes(app, client, channel, card_name, series_hint=None):
                 continue
             if "could not be found" in msg.content.lower():
                 continue
+            # Could be single or multi — fall through to the checks below
             card_name = variant
             break
         else:
@@ -769,6 +762,7 @@ async def maybe_burn(app, client, channel, card):
         app.ui_log(f"   ✅ Burn command sent for {card['name']}.")
     except asyncio.TimeoutError:
         app.ui_log("   ⚠ Burn response timed out")
+
 
 
 # ─────────────────────────────────────────────
@@ -979,6 +973,7 @@ async def do_work(app, client, channel):
         nodes_msg = await client.wait_for("message", check=check, timeout=12)
         nodes_desc = "".join(str(emb.description or "") for emb in nodes_msg.embeds)
 
+        # Find line starting with "2." and extract the backtick node name
         node_name = None
         for line in nodes_desc.splitlines():
             if line.strip().startswith("2."):
@@ -1045,7 +1040,11 @@ async def do_daily(app, client, channel):
     def check_msg(m):
         return m.channel.id == channel.id and m.author.id == KARUTA_ID
 
+    def check_edit(before, after):
+        return after.channel.id == channel.id and after.author.id == KARUTA_ID and after.components
+
     try:
+        # Wait for Karuta's initial daily message
         msg = await client.wait_for("message", check=check_msg, timeout=10)
 
         if "already" in msg.content.lower():
@@ -1069,7 +1068,9 @@ async def do_daily(app, client, channel):
             await quiz_btn.click()
             app.ui_log("   📅 Clicked Quiz button, waiting for edit...")
 
-            # Step 2: poll the message directly every second for up to 15s
+            # Step 2: message is cached so message_edit will fire
+            # Poll the message directly every second for up to 15s
+            # as a reliable alternative to event-based listening
             after_msg = None
             for _ in range(15):
                 await asyncio.sleep(1)
@@ -1196,6 +1197,7 @@ def _parse_affectionlist_desc(desc):
     Returns list of {code, name, energy, ar, ap, score}
     """
     cards = []
+    # Each numbered entry starts with `N`.
     for entry in re.split(r'(?=`\d+`\.)', desc):
         entry = entry.strip()
         if not entry:
@@ -1204,7 +1206,11 @@ def _parse_affectionlist_desc(desc):
         energy_m = re.search(r'`(\d+)\s*■`', entry)
         ar_m     = re.search(r'`(\d+)\s*AR`', entry)
         ap_m     = re.search(r'`(\d+)\s*AP`', entry)
+        # Card code: short alphanumeric in backticks, appears after AP field
+        # Extract all backtick tokens, code is the one that isn't a number or stat
         codes    = re.findall(r'`([a-z0-9]{4,8})`', entry)
+        # Filter out stat tokens like "5 ■", "18 AR" etc — those have spaces/symbols
+        # after stripping: what remains are pure alphanumeric codes
         pure_codes = [c for c in codes if re.fullmatch(r'[a-z0-9]+', c) and not c.isdigit()]
         name_m   = re.search(r'\*\*(.+?)\*\*', entry)
 
@@ -1406,6 +1412,7 @@ async def _check_card_owned(app, client, channel, code):
         app.ui_log(f"   ✅ {code} confirmed in collection")
         return True
 
+    # Exhausted retries
     app.ui_log(f"   ⚠ k!c code={code} failed after {MAX_RETRIES} cooldown retries — skipping")
     return False
 
@@ -1474,8 +1481,7 @@ async def do_visit(app, client, channel):
                     break
             if not card_code:
                 app.ui_log("🏛 No owned eligible cards found — running k!visit with no code")
-
-    cmd = f"k!visit {card_code}" if card_code else "k!visit"
+    cmd       = f"k!visit {card_code}" if card_code else "k!visit"
     app.ui_log(f"🏛 Visiting shrine... ({cmd})")
     await send_safe(channel, cmd, app)
 
@@ -1576,6 +1582,9 @@ async def do_visit(app, client, channel):
         app.ui_log(f"   ⚠ Visit: hit safety cap of {MAX_ROUNDS} rounds")
 
     # ── Actions loop: Tell Joke while affection points >= 2 ──
+    # After Talk energy runs out we're back on the Talk/Actions screen.
+    # Enter Actions once, then loop :one: (Tell Joke) → ✓ until points < 2.
+    # Exit with :speech_balloon: to return to the main screen.
     app.ui_log("   🎭 Checking affection points for Actions loop...")
     _debug_visit_msg(app, "pre_actions", msg)
 
@@ -1716,7 +1725,9 @@ def pick_best_card(app, cards):
             return i
 
     max_print  = max(c["print"] for c in cards) or 1
-    max_wishes = max((c["wishes"] or 0 for c in cards), default=0) or 1
+    # Treat None (failed lookup) as 0 for scoring purposes
+    wish_vals  = [c["wishes"] or 0 for c in cards]
+    max_wishes = max(wish_vals) or 1
 
     best_score, best_idx = -1, 0
     for i, card in enumerate(cards):
