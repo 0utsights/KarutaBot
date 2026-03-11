@@ -2,7 +2,7 @@ import tkinter as tk
 from tkinter import ttk, messagebox
 import requests
 import threading
-from datetime import datetime, timezone
+from datetime import datetime
 
 # ─────────────────────────────────────────────
 #  CONFIG
@@ -218,7 +218,7 @@ class AdminDashboard:
             return
 
         keys = data.get("keys", [])
-        now = datetime.now(timezone.utc)
+        now = datetime.now(datetime.UTC)
 
         # Clear all rows in one call to avoid race with auto-refresh
         self.tree.delete(*self.tree.get_children())
