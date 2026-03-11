@@ -192,43 +192,66 @@ async def automation_loop(app, client, channel_id):
             reminders = await fetch_reminders(app, client, channel)
             await asyncio.sleep(2)
 
-            # ── Vote ──
-            if getattr(app, "macro_vote", None) and app.macro_vote.get():
-                vote_mode = getattr(app, "vote_mode_var", None)
-                vote_mode = vote_mode.get() if vote_mode else "semi"
+            # ── Build macro execution order ──────────────────────────────
+            # Drop has an 80% chance of going first (it's the most time-sensitive
+            # command). The remaining macros are shuffled randomly to humanize the
+            # pattern. Grab always immediately follows drop — that's handled inside
+            # do_drop itself.
+            #
+            # Secondary macros (vote, daily, work, visit) run in a randomized order
+            # with a short random pause between each to avoid identical timing
+            # fingerprints across multiple accounts running simultaneously.
 
-                if reminders.get("Vote") == 0 and vote_mode != "off":
-                    await do_vote(app, client, channel)
-                    await asyncio.sleep(2)
+            drop_goes_first = random.random() < 0.80
 
-            # ── Daily ──
-            if getattr(app, "macro_daily", None) and app.macro_daily.get():
-                if reminders.get("Daily") == 0:
-                    await do_daily(app, client, channel)
-                    await asyncio.sleep(2)
+            async def _run_drop():
+                if getattr(app, "macro_drop", None) and app.macro_drop.get():
+                    drop_cooldown = reminders.get("Drop")
+                    if app.drops_today >= app.max_drops_var.get():
+                        app.ui_log(f"⚠ Daily drop limit reached ({app.max_drops_var.get()}). Skipping drop.")
+                    elif drop_cooldown and drop_cooldown > 0:
+                        app.ui_log(f"⏱ Drop on cooldown ({int(drop_cooldown // 60)}m) — skipping drop this cycle")
+                    else:
+                        await do_drop(app, client, channel)
 
-            # ── Drop (+ Grab is checked inside do_drop) ──
-            if getattr(app, "macro_drop", None) and app.macro_drop.get():
-                drop_cooldown = reminders.get("Drop")  # seconds remaining, 0 = ready, None = unknown
+            async def _run_secondaries():
+                """Run vote, daily, work, visit in randomized order."""
+                secondaries = []
 
-                if app.drops_today >= app.max_drops_var.get():
-                    app.ui_log(f"⚠ Daily drop limit reached ({app.max_drops_var.get()}). Skipping drop.")
-                elif drop_cooldown and drop_cooldown > 0:
-                    app.ui_log(f"⏱ Drop on cooldown ({int(drop_cooldown // 60)}m) — skipping drop this cycle")
-                else:
-                    await do_drop(app, client, channel)
+                if getattr(app, "macro_vote", None) and app.macro_vote.get():
+                    vote_mode = getattr(app, "vote_mode_var", None)
+                    vote_mode = vote_mode.get() if vote_mode else "semi"
+                    if reminders.get("Vote") == 0 and vote_mode != "off":
+                        secondaries.append(("Vote", do_vote))
 
-            # ── Work ──
-            if getattr(app, "macro_work", None) and app.macro_work.get():
-                if reminders.get("Work") == 0:
-                    await do_work(app, client, channel)
-                    await asyncio.sleep(2)
+                if getattr(app, "macro_daily", None) and app.macro_daily.get():
+                    if reminders.get("Daily") == 0:
+                        secondaries.append(("Daily", do_daily))
 
-            # ── Visit ──
-            if getattr(app, "macro_visit", None) and app.macro_visit.get():
-                if reminders.get("Visit") == 0:
-                    await do_visit(app, client, channel)
-                    await asyncio.sleep(2)
+                if getattr(app, "macro_work", None) and app.macro_work.get():
+                    if reminders.get("Work") == 0:
+                        secondaries.append(("Work", do_work))
+
+                if getattr(app, "macro_visit", None) and app.macro_visit.get():
+                    if reminders.get("Visit") == 0:
+                        secondaries.append(("Visit", do_visit))
+
+                random.shuffle(secondaries)
+                for label, fn in secondaries:
+                    await fn(app, client, channel)
+                    # Random inter-command pause (15-75s) — avoids identical
+                    # timing patterns across multiple simultaneous accounts
+                    pause = random.uniform(15, 75)
+                    app.ui_log(f"   ↳ Pausing {int(pause)}s before next command...")
+                    await asyncio.sleep(pause)
+
+            if drop_goes_first:
+                await _run_drop()
+                await _run_secondaries()
+            else:
+                app.ui_log("🎲 Humanized order: running secondary commands before drop this cycle")
+                await _run_secondaries()
+                await _run_drop()
 
             # Re-fetch reminders after all commands so badges and sleep duration are accurate
             await asyncio.sleep(2)
