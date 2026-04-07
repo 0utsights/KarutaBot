@@ -6,3 +6,4 @@ ocr_debug
 __pycache__/
 *.pyc
 *.pyo
+venv/
