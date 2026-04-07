@@ -6,10 +6,8 @@ import json
 import os
 from datetime import datetime
 
-from config import (C, APP_NAME, APP_VERSION, ADMIN_PASSWORD, MAX_DROPS_PER_DAY,
+from config import (C, APP_NAME, APP_VERSION, MAX_DROPS_PER_DAY,
                     DROP_JITTER_MIN, DROP_JITTER_MAX, load_config, save_config, default_account)
-from license import start_heartbeat, release_key
-import session as session_api
 from bot import run_discord_loop, do_drop
 
 
@@ -293,12 +291,8 @@ class AccountPanel:
 
         # ── Per-account macro toggles ──
         macros = account_data.get("macros", {})
-        feats  = getattr(app, "features", {})
-
         def _macro_val(key: str, default: bool = True) -> bool:
-            """Saved user preference, clamped to what the tier allows."""
-            if not feats.get(key, True):
-                return False
+            """Saved user preference."""
             return macros.get(key, default)
 
         self.macro_daily  = tk.BooleanVar(value=_macro_val("daily"))
@@ -575,10 +569,9 @@ class AccountPanel:
             ("visit", self.macro_visit, "🏛 Visit", "Visit shrine, talk, and use actions (2h cycle)"),
         ]
 
-        feats = getattr(self.app, "features", {})
 
         for key, var, label, desc in macro_info:
-            allowed = feats.get(key, True)
+            allowed = True
             row = tk.Frame(macros_section, bg=C["card2"])
             row.pack(fill="x", padx=12, pady=3)
 
@@ -611,14 +604,14 @@ class AccountPanel:
 
         def enable_all():
             for k, v, _, _ in macro_info:
-                if feats.get(k, True):
+                if True:
                     v.set(True)
         def disable_all():
             for _, v, _, _ in macro_info:
                 v.set(False)
         def drops_only():
             for k, v, _, _ in macro_info:
-                v.set(k in ("drop", "grab") and feats.get(k, True))
+                v.set(k in ("drop", "grab"))
 
         _btn(quick_btns, "Enable All", enable_all, C["accent3"], small=True).pack(side="left", padx=(0, 6))
         _btn(quick_btns, "Disable All", disable_all, C["red"], small=True).pack(side="left", padx=(0, 6))
@@ -928,13 +921,7 @@ class AccountPanel:
             daemon=True
         )
         self.bot_thread.start()
-        # Report session start to API in background so it doesn't delay bot startup
-        account_name = self.name_var.get().strip() or "Account"
-        threading.Thread(
-            target=session_api.start,
-            args=(account_name,),
-            daemon=True
-        ).start()
+
 
     def stop_bot(self):
         self.running = False
@@ -946,13 +933,7 @@ class AccountPanel:
         if self.client and self.loop:
             import asyncio
             asyncio.run_coroutine_threadsafe(self.client.close(), self.loop)
-        # Report session end with final stats
-        account_name = self.name_var.get().strip() or "Account"
-        threading.Thread(
-            target=session_api.end,
-            args=(account_name, self.drops_today, self.grabbed_today),
-            daemon=True
-        ).start()
+
 
     def manual_drop(self):
         if self.client and self.loop:
@@ -965,7 +946,7 @@ class AccountPanel:
 #  KarutaApp — main window
 # ─────────────────────────────────────────────────────────────────────────────
 class KarutaApp:
-    def __init__(self, root, features: dict | None = None):
+    def __init__(self, root):
         self.root = root
         self.root.title(f"{APP_NAME}  v{APP_VERSION}")
         _apply_scrollbar_style(root)
@@ -973,15 +954,7 @@ class KarutaApp:
         self.root.minsize(700, 600)
         self.root.configure(bg=C["bg"])
 
-        # ── Tier feature gates ─────────────────────────────
-        # Keys: drop, grab, daily, vote, work, visit, multi_account
-        # Default to full access so the app still works without a features dict
-        # (dev mode / legacy keys).
-        self.features = features or {
-            "drop": True, "grab": True, "daily": True,
-            "vote": True, "work": True, "visit": True,
-            "multi_account": True,
-        }
+
 
         self.config     = load_config()
         self.panels     = []
@@ -1015,8 +988,7 @@ class KarutaApp:
         tr.pack(side="right", padx=16)
 
         _btn(tr, "⚙ Settings", self._open_settings, C["card2"], small=True).pack(side="left", padx=4)
-        if self.features.get("multi_account"):
-            _btn(tr, "+ Add Account", self.add_account, C["accent"], small=True).pack(side="left", padx=4)
+        _btn(tr, "+ Add Account", self.add_account, C["accent"], small=True).pack(side="left", padx=4)
         _btn(tr, "📂 Import",     self.import_config, C["card2"], small=True).pack(side="left", padx=4)
         _btn(tr, "💾 Export",     self.export_config, C["card2"], small=True).pack(side="left", padx=4)
         _btn(tr, "❓ Token Help",  self.show_token_help, C["card2"], small=True).pack(side="left", padx=4)
@@ -1168,7 +1140,7 @@ class KarutaApp:
                 toggle_btn.config(text="🔓 Enable Admin Mode")
             else:
                 pw = admin_pass_var.get().strip()
-                if pw == ADMIN_PASSWORD:
+                if False:  # admin mode disabled in open source
                     self.admin_mode = True
                     for panel in self.panels:
                         panel.set_admin_mode(True)
@@ -1227,8 +1199,7 @@ class KarutaApp:
             messagebox.showwarning("Import", "No accounts found in file.")
             return
 
-        # Enforce single-account limit for non-multi_account tiers
-        if not self.features.get("multi_account") and len(accounts) > 1:
+        if False and len(accounts) > 1:  # no account limit in open source
             messagebox.showwarning(
                 "Import Limited",
                 f"Your plan only supports 1 account.\n"
