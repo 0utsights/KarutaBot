@@ -6,12 +6,10 @@ import os
 # ─────────────────────────────────────────────
 APP_NAME          = "Aeyori"
 APP_VERSION       = "1.0.0"
-ADMIN_PASSWORD    = "8764abc213"
 
 # ─────────────────────────────────────────────
 #  Constants
 # ─────────────────────────────────────────────
-SERVER_URL        = "https://aeyori-production.up.railway.app"
 CONFIG_FILE       = "config.json"
 MAX_DROPS_PER_DAY = 40
 DROP_COOLDOWN_MIN = 30
@@ -23,15 +21,15 @@ KARUTA_ID         = 646937666251915264
 #  Glass dark color theme
 # ─────────────────────────────────────────────
 C = {
-    "bg":       "#0a0e1a",       # deep navy background
-    "bg2":      "#0f1528",       # slightly lighter bg
-    "card":     "#111827",       # glass card base
-    "card2":    "#1a2235",       # elevated card
-    "border":   "#1e2d47",       # subtle border
-    "accent":   "#00d4ff",       # cyan accent
-    "accent2":  "#0099cc",       # darker cyan
-    "accent3":  "#00ff9d",       # green accent
-    "glow":     "#00d4ff33",     # accent glow (transparent)
+    "bg":       "#0a0e1a",
+    "bg2":      "#0f1528",
+    "card":     "#111827",
+    "card2":    "#1a2235",
+    "border":   "#1e2d47",
+    "accent":   "#00d4ff",
+    "accent2":  "#0099cc",
+    "accent3":  "#00ff9d",
+    "glow":     "#00d4ff33",
     "green":    "#00e676",
     "red":      "#ff4569",
     "yellow":   "#ffd740",
@@ -52,13 +50,12 @@ def default_account():
         "max_drops":  MAX_DROPS_PER_DAY,
         "jitter_min":  DROP_JITTER_MIN,
         "jitter_max":  DROP_JITTER_MAX,
-        "vote_mode":  "auto",       # "auto" | "semi" | "off"
+        "vote_mode":  "auto",
         "show_browser": False,
         "visit_card_code": "",
         "visit_tag":  "visit",
         "auto_burn":  False,
         "enabled":    True,
-        # ── Per-account macro toggles ──
         "macros": {
             "daily":  True,
             "vote":   True,
@@ -73,7 +70,6 @@ def load_config():
     if os.path.exists(CONFIG_FILE):
         with open(CONFIG_FILE) as f:
             data = json.load(f)
-        # Migrate old single-account format
         if "accounts" not in data:
             data = {"accounts": [{
                 "name":       "Account 1",
@@ -84,7 +80,6 @@ def load_config():
                 "jitter_max":  DROP_JITTER_MAX,
                 "enabled":    True,
             }]}
-        # Migrate accounts missing macros dict
         default_macros = default_account()["macros"]
         for acc in data.get("accounts", []):
             if "macros" not in acc:
