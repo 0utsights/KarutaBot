@@ -41,8 +41,8 @@ Aeyori automates the repetitive parts of Karuta so you can focus on the parts yo
 
 **1. Clone the repo**
 ```bash
-git clone https://github.com/0utsights/aeyori-bot.git
-cd aeyori-bot
+git clone https://github.com/0utsights/KarutaBot.git    <--- 0utsights with a zero not an o
+cd KarutaBot
 ```
 
 **2. Create a virtual environment**
