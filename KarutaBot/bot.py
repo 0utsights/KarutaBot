@@ -1066,6 +1066,27 @@ async def do_daily(app, client, channel):
     def check_edit(before, after):
         return after.channel.id == channel.id and after.author.id == KARUTA_ID and after.components
 
+    def _daily_btn_desc(btn):
+        label = getattr(btn, "label", None) or ""
+        emoji = getattr(btn, "emoji", None)
+        disabled = getattr(btn, "disabled", False)
+        return f"label={label!r} emoji={emoji} disabled={disabled}"
+
+    def _find_daily_quiz_button(components):
+        """Prefer the brain/quiz action regardless of its position."""
+        if not components:
+            return None
+
+        quiz_by_label = _find_button(components, "quiz")
+        if quiz_by_label and not getattr(quiz_by_label, "disabled", False):
+            return quiz_by_label
+
+        quiz_by_emoji = _find_emoji_button(components, "🧠", "brain")
+        if quiz_by_emoji and not getattr(quiz_by_emoji, "disabled", False):
+            return quiz_by_emoji
+
+        return None
+
     try:
         # Wait for Karuta's initial daily message
         msg = await client.wait_for("message", check=check_msg, timeout=10)
@@ -1078,16 +1099,20 @@ async def do_daily(app, client, channel):
         if msg.components:
             for ri, row in enumerate(msg.components):
                 for bi, btn in enumerate(row.children):
-                    label = getattr(btn, "label", None) or getattr(btn, "emoji", "?")
-                    app.ui_log(f"   [daily] button[{ri}][{bi}] = {label!r}")
+                    app.ui_log(f"   [daily] button[{ri}][{bi}] = {_daily_btn_desc(btn)}")
 
         if not msg.components:
             app.ui_log(f"   📅 No buttons. Content: {msg.content[:80]!r}")
             return
 
         try:
-            # Step 1: click the Quiz button (first button)
-            quiz_btn = msg.components[0].children[0]
+            # Step 1: click the Quiz button by label/emoji, not position.
+            quiz_btn = _find_daily_quiz_button(msg.components)
+            if not quiz_btn:
+                quiz_btn = msg.components[0].children[0]
+                app.ui_log("   ⚠ Quiz button not matched by label/emoji — falling back to first button")
+            else:
+                app.ui_log(f"   📅 Found Quiz button: {_daily_btn_desc(quiz_btn)}")
             await quiz_btn.click()
             app.ui_log("   📅 Clicked Quiz button, waiting for edit...")
 
@@ -1102,8 +1127,7 @@ async def do_daily(app, client, channel):
                     if refreshed.components:
                         for ri, row in enumerate(refreshed.components):
                             for bi, btn in enumerate(row.children):
-                                label = getattr(btn, "label", None) or getattr(btn, "emoji", "?")
-                                app.ui_log(f"   [daily edit] button[{ri}][{bi}] = {label!r}")
+                                app.ui_log(f"   [daily edit] button[{ri}][{bi}] = {_daily_btn_desc(btn)}")
                         after_msg = refreshed
                         break
                     else:
