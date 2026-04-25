@@ -3,6 +3,7 @@ build/
 *.spec
 config.json
 ocr_debug
+KarutaBot/vote_debug/
 __pycache__/
 *.pyc
 *.pyo
