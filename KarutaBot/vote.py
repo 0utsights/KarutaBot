@@ -19,8 +19,13 @@ Notes:
     fingerprinting, so the checkbox captcha almost always auto-passes.
 """
 
-import time
 import logging
+import os
+import platform
+import re
+import shutil
+import subprocess
+import time
 
 log = logging.getLogger("aeyori.vote")
 
@@ -35,6 +40,86 @@ OAUTH_FLOW_WAIT  = 18     # seconds for Discord→top.gg OAuth redirect chain
 VOTE_BTN_WAIT    = 45     # seconds to poll for vote button (includes ad wait)
 CAPTCHA_WAIT     = 8      # seconds to wait for captcha to resolve after click
 SUCCESS_WAIT     = 6      # seconds to check for success confirmation
+
+
+def _parse_browser_major(version_text):
+    match = re.search(r"(\d+)\.", version_text or "")
+    return int(match.group(1)) if match else None
+
+
+def _iter_browser_candidates():
+    """Yield browser executables in priority order for the current OS."""
+    env_bin = os.environ.get("AEYORI_CHROME_BIN")
+    if env_bin:
+        yield env_bin
+
+    for name in (
+        "google-chrome",
+        "google-chrome-stable",
+        "chromium",
+        "chromium-browser",
+        "brave-browser",
+        "microsoft-edge",
+        "microsoft-edge-stable",
+        "chrome",
+    ):
+        path = shutil.which(name)
+        if path:
+            yield path
+
+    system = platform.system()
+    if system == "Windows":
+        for path in (
+            r"C:\Program Files\Google\Chrome\Application\chrome.exe",
+            r"C:\Program Files (x86)\Google\Chrome\Application\chrome.exe",
+            r"C:\Program Files\Chromium\Application\chrome.exe",
+            r"C:\Program Files (x86)\Chromium\Application\chrome.exe",
+            r"C:\Program Files\Microsoft\Edge\Application\msedge.exe",
+            r"C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe",
+        ):
+            yield path
+    elif system == "Darwin":
+        for path in (
+            "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+            "/Applications/Chromium.app/Contents/MacOS/Chromium",
+            "/Applications/Brave Browser.app/Contents/MacOS/Brave Browser",
+            "/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge",
+        ):
+            yield path
+
+
+def _detect_browser():
+    """Return (browser_path, major_version) when a compatible browser is found."""
+    seen = set()
+    env_ver = os.environ.get("AEYORI_CHROME_VERSION")
+
+    for candidate in _iter_browser_candidates():
+        if not candidate or candidate in seen:
+            continue
+        seen.add(candidate)
+
+        try:
+            result = subprocess.run(
+                [candidate, "--version"],
+                capture_output=True,
+                text=True,
+                timeout=5,
+            )
+        except Exception:
+            continue
+
+        version_text = (result.stdout or result.stderr or "").strip()
+        if result.returncode != 0 or not version_text:
+            continue
+
+        major = _parse_browser_major(version_text)
+        if major:
+            return candidate, major
+
+    if env_ver and env_ver.isdigit():
+        return os.environ.get("AEYORI_CHROME_BIN"), int(env_ver)
+
+    return None, None
 
 
 def _create_driver(headless=True):
@@ -67,12 +152,11 @@ def _create_driver(headless=True):
     # (images re-enable automatically — this just cuts load time)
     options.add_argument("--blink-settings=imagesEnabled=false")
 
-    # Detect installed Chrome version so we download the matching driver.
-    # undetected-chromedriver sometimes guesses wrong (e.g. grabs v146
-    # when v145 is installed), so we read it ourselves.
+    # Detect installed Chrome/Chromium version so we download the matching
+    # driver. undetected-chromedriver can guess wrong on some systems.
+    browser_path = None
     chrome_ver = None
     try:
-        import subprocess, re as _re
         # Windows: query registry for Chrome version
         result = subprocess.run(
             ['reg', 'query',
@@ -80,33 +164,25 @@ def _create_driver(headless=True):
              '/v', 'version'],
             capture_output=True, text=True, timeout=5
         )
-        match = _re.search(r'(\d+)\.', result.stdout)
-        if match:
-            chrome_ver = int(match.group(1))
+        major = _parse_browser_major(result.stdout)
+        if major:
+            chrome_ver = major
             log.info(f"Detected Chrome version: {chrome_ver}")
     except Exception:
         pass
 
-    if not chrome_ver:
-        # Fallback: try reading from the Chrome executable directly
-        try:
-            import subprocess, re as _re
-            for path in [
-                r"C:\Program Files\Google\Chrome\Application\chrome.exe",
-                r"C:\Program Files (x86)\Google\Chrome\Application\chrome.exe",
-            ]:
-                result = subprocess.run(
-                    [path, "--version"],
-                    capture_output=True, text=True, timeout=5
-                )
-                match = _re.search(r'(\d+)\.', result.stdout)
-                if match:
-                    chrome_ver = int(match.group(1))
-                    break
-        except Exception:
-            pass
+    detected_path, detected_ver = _detect_browser()
+    if detected_path:
+        browser_path = detected_path
+        log.info(f"Detected browser executable: {browser_path}")
+    if not chrome_ver and detected_ver:
+        chrome_ver = detected_ver
+        log.info(f"Detected browser major version: {chrome_ver}")
 
     kwargs = dict(options=options, use_subprocess=True)
+    if browser_path:
+        options.binary_location = browser_path
+        kwargs["browser_executable_path"] = browser_path
     if chrome_ver:
         kwargs["version_main"] = chrome_ver
         log.info(f"Requesting ChromeDriver for Chrome {chrome_ver}")
@@ -1248,4 +1324,3 @@ def _close_driver(driver, headless, _log):
         driver._is_remote = False
     except Exception:
         pass
-
