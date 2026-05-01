@@ -6,8 +6,10 @@ import json
 import os
 from datetime import datetime
 
-from config import (C, APP_NAME, APP_VERSION, MAX_DROPS_PER_DAY,
-                    DROP_JITTER_MIN, DROP_JITTER_MAX, load_config, save_config, default_account)
+from config import (C, APP_NAME, APP_VERSION, LICENSED_MODE,
+                    FULL_ACCESS_FEATURES, MAX_DROPS_PER_DAY,
+                    DROP_JITTER_MIN, DROP_JITTER_MAX, load_config, save_config,
+                    default_account)
 from bot import run_discord_loop, do_drop
 
 
@@ -291,8 +293,12 @@ class AccountPanel:
 
         # ── Per-account macro toggles ──
         macros = account_data.get("macros", {})
+        feats = getattr(app, "features", {})
+
         def _macro_val(key: str, default: bool = True) -> bool:
-            """Saved user preference."""
+            """Saved user preference, clamped to what the tier allows."""
+            if not feats.get(key, True):
+                return False
             return macros.get(key, default)
 
         self.macro_daily  = tk.BooleanVar(value=_macro_val("daily"))
@@ -570,8 +576,10 @@ class AccountPanel:
         ]
 
 
+        feats = getattr(self.app, "features", {})
+
         for key, var, label, desc in macro_info:
-            allowed = True
+            allowed = feats.get(key, True)
             row = tk.Frame(macros_section, bg=C["card2"])
             row.pack(fill="x", padx=12, pady=3)
 
@@ -604,14 +612,14 @@ class AccountPanel:
 
         def enable_all():
             for k, v, _, _ in macro_info:
-                if True:
+                if feats.get(k, True):
                     v.set(True)
         def disable_all():
             for _, v, _, _ in macro_info:
                 v.set(False)
         def drops_only():
             for k, v, _, _ in macro_info:
-                v.set(k in ("drop", "grab"))
+                v.set(k in ("drop", "grab") and feats.get(k, True))
 
         _btn(quick_btns, "Enable All", enable_all, C["accent3"], small=True).pack(side="left", padx=(0, 6))
         _btn(quick_btns, "Disable All", disable_all, C["red"], small=True).pack(side="left", padx=(0, 6))
@@ -946,7 +954,7 @@ class AccountPanel:
 #  KarutaApp — main window
 # ─────────────────────────────────────────────────────────────────────────────
 class KarutaApp:
-    def __init__(self, root):
+    def __init__(self, root, features: dict | None = None):
         self.root = root
         self.root.title(f"{APP_NAME}  v{APP_VERSION}")
         _apply_scrollbar_style(root)
@@ -954,7 +962,12 @@ class KarutaApp:
         self.root.minsize(700, 600)
         self.root.configure(bg=C["bg"])
 
-
+        # Licensed builds respect backend-provided features.
+        # Open-source builds always run with full access.
+        if LICENSED_MODE:
+            self.features = dict(features or FULL_ACCESS_FEATURES)
+        else:
+            self.features = dict(FULL_ACCESS_FEATURES)
 
         self.config     = load_config()
         self.panels     = []
@@ -988,7 +1001,8 @@ class KarutaApp:
         tr.pack(side="right", padx=16)
 
         _btn(tr, "⚙ Settings", self._open_settings, C["card2"], small=True).pack(side="left", padx=4)
-        _btn(tr, "+ Add Account", self.add_account, C["accent"], small=True).pack(side="left", padx=4)
+        if self.features.get("multi_account"):
+            _btn(tr, "+ Add Account", self.add_account, C["accent"], small=True).pack(side="left", padx=4)
         _btn(tr, "📂 Import",     self.import_config, C["card2"], small=True).pack(side="left", padx=4)
         _btn(tr, "💾 Export",     self.export_config, C["card2"], small=True).pack(side="left", padx=4)
         _btn(tr, "❓ Token Help",  self.show_token_help, C["card2"], small=True).pack(side="left", padx=4)
@@ -1199,7 +1213,7 @@ class KarutaApp:
             messagebox.showwarning("Import", "No accounts found in file.")
             return
 
-        if False and len(accounts) > 1:  # no account limit in open source
+        if not self.features.get("multi_account") and len(accounts) > 1:
             messagebox.showwarning(
                 "Import Limited",
                 f"Your plan only supports 1 account.\n"
