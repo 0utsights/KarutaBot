@@ -2,11 +2,12 @@ import json
 import os
 
 # ─────────────────────────────────────────────
-#  App branding
+#  App Branding
 # ─────────────────────────────────────────────
-APP_NAME          = "Aeyori"
-APP_VERSION       = "1.0.0"
-ADMIN_PASSWORD    = "8764abc213"
+APP_NAME       = "Aeyori"
+APP_VERSION    = "1.0.0"
+ADMIN_PASSWORD = "8764abc213"  # local admin/debug toggle only
+LICENSED_MODE  = True
 
 # ─────────────────────────────────────────────
 #  Constants
@@ -19,19 +20,29 @@ DROP_JITTER_MIN   = 2
 DROP_JITTER_MAX   = 6
 KARUTA_ID         = 646937666251915264
 
+FULL_ACCESS_FEATURES = {
+    "drop": True,
+    "grab": True,
+    "daily": True,
+    "vote": True,
+    "work": True,
+    "visit": True,
+    "multi_account": True,
+}
+
 # ─────────────────────────────────────────────
-#  Glass dark color theme
+#  Glass Dark Color Theme
 # ─────────────────────────────────────────────
 C = {
-    "bg":       "#0a0e1a",       # deep navy background
-    "bg2":      "#0f1528",       # slightly lighter bg
-    "card":     "#111827",       # glass card base
-    "card2":    "#1a2235",       # elevated card
-    "border":   "#1e2d47",       # subtle border
-    "accent":   "#00d4ff",       # cyan accent
-    "accent2":  "#0099cc",       # darker cyan
-    "accent3":  "#00ff9d",       # green accent
-    "glow":     "#00d4ff33",     # accent glow (transparent)
+    "bg":       "#0a0e1a",
+    "bg2":      "#0f1528",
+    "card":     "#111827",
+    "card2":    "#1a2235",
+    "border":   "#1e2d47",
+    "accent":   "#00d4ff",
+    "accent2":  "#0099cc",
+    "accent3":  "#00ff9d",
+    "glow":     "#00d4ff33",
     "green":    "#00e676",
     "red":      "#ff4569",
     "yellow":   "#ffd740",
@@ -41,66 +52,73 @@ C = {
     "dark":     "#070b14",
 }
 
+
 # ─────────────────────────────────────────────
-#  Config helpers — supports multiple accounts
+#  Config Helpers
 # ─────────────────────────────────────────────
 def default_account():
     return {
-        "name":       "Account 1",
-        "token":      "",
+        "name": "Account 1",
+        "token": "",
         "channel_id": "",
-        "max_drops":  MAX_DROPS_PER_DAY,
-        "jitter_min":  DROP_JITTER_MIN,
-        "jitter_max":  DROP_JITTER_MAX,
-        "vote_mode":  "auto",       # "auto" | "semi" | "off"
+        "max_drops": MAX_DROPS_PER_DAY,
+        "jitter_min": DROP_JITTER_MIN,
+        "jitter_max": DROP_JITTER_MAX,
+        "vote_mode": "auto",  # "auto" | "semi" | "off"
         "show_browser": False,
         "visit_card_code": "",
-        "visit_tag":  "visit",
-        "auto_burn":  False,
-        "enabled":    True,
+        "visit_tag": "visit",
+        "auto_burn": False,
+        "enabled": True,
         "blessings": {
             "leadership": False,
         },
-        # ── Per-account macro toggles ──
         "macros": {
-            "daily":  True,
-            "vote":   True,
-            "work":   True,
-            "drop":   True,
-            "grab":   True,
-            "visit":  True,
+            "daily": True,
+            "vote": True,
+            "work": True,
+            "drop": True,
+            "grab": True,
+            "visit": True,
         },
     }
+
 
 def load_config():
     if os.path.exists(CONFIG_FILE):
         with open(CONFIG_FILE) as f:
             data = json.load(f)
-        # Migrate old single-account format
+
         if "accounts" not in data:
             data = {"accounts": [{
-                "name":       "Account 1",
-                "token":      data.get("token", ""),
+                "name": "Account 1",
+                "token": data.get("token", ""),
                 "channel_id": data.get("channel_id", ""),
-                "max_drops":  data.get("max_drops", MAX_DROPS_PER_DAY),
-                "jitter_min":  DROP_JITTER_MIN,
-                "jitter_max":  DROP_JITTER_MAX,
-                "enabled":    True,
+                "max_drops": data.get("max_drops", MAX_DROPS_PER_DAY),
+                "jitter_min": DROP_JITTER_MIN,
+                "jitter_max": DROP_JITTER_MAX,
+                "enabled": True,
                 "blessings": {
                     "leadership": False,
                 },
             }]}
-        # Migrate accounts missing blessing / macros data
-        default_blessings = default_account()["blessings"]
-        default_macros = default_account()["macros"]
+
+        defaults = default_account()
+        default_blessings = defaults["blessings"]
+        default_macros = defaults["macros"]
+
         for acc in data.get("accounts", []):
             blessings = acc.setdefault("blessings", {})
             for key, value in default_blessings.items():
                 blessings.setdefault(key, value)
+
             if "macros" not in acc:
                 acc["macros"] = dict(default_macros)
+
         return data
+
     return {"accounts": [default_account()]}
+
 
 def save_config(data):
     with open(CONFIG_FILE, "w") as f:

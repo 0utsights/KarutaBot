@@ -6,10 +6,10 @@ import json
 import os
 from datetime import datetime
 
-from config import (C, APP_NAME, APP_VERSION, ADMIN_PASSWORD, MAX_DROPS_PER_DAY,
-                    DROP_COOLDOWN_MIN, DROP_JITTER_MIN, DROP_JITTER_MAX,
-                    load_config, save_config, default_account)
-from license import start_heartbeat, release_key
+from config import (C, APP_NAME, APP_VERSION, ADMIN_PASSWORD, LICENSED_MODE,
+                    FULL_ACCESS_FEATURES, MAX_DROPS_PER_DAY, DROP_COOLDOWN_MIN,
+                    DROP_JITTER_MIN, DROP_JITTER_MAX, load_config, save_config,
+                    default_account)
 import session as session_api
 from bot import run_discord_loop, do_drop
 
@@ -1011,14 +1011,12 @@ class KarutaApp:
         self.root.configure(bg=C["bg"])
 
         # ── Tier feature gates ─────────────────────────────
-        # Keys: drop, grab, daily, vote, work, visit, multi_account
-        # Default to full access so the app still works without a features dict
-        # (dev mode / legacy keys).
-        self.features = features or {
-            "drop": True, "grab": True, "daily": True,
-            "vote": True, "work": True, "visit": True,
-            "multi_account": True,
-        }
+        # Licensed builds respect backend-provided features.
+        # Open-source builds always run with full access.
+        if LICENSED_MODE:
+            self.features = dict(features or FULL_ACCESS_FEATURES)
+        else:
+            self.features = dict(FULL_ACCESS_FEATURES)
 
         self.config     = load_config()
         self.panels     = []

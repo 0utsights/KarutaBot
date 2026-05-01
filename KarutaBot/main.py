@@ -2,7 +2,7 @@ import threading
 import tkinter as tk
 
 from license import start_heartbeat, release_key, validate_key
-from config import C
+from config import C, FULL_ACCESS_FEATURES, LICENSED_MODE
 from gui import KarutaApp
 
 
@@ -56,15 +56,23 @@ def show_key_screen():
 
 
 def launch():
-    key, features = show_key_screen()
-    if not key:
-        return
+    key = None
+    features = dict(FULL_ACCESS_FEATURES)
 
-    threading.Thread(target=start_heartbeat, args=(key,), daemon=True).start()
+    if LICENSED_MODE:
+        key, features = show_key_screen()
+        if not key:
+            return
+        threading.Thread(target=start_heartbeat, args=(key,), daemon=True).start()
 
     root = tk.Tk()
     app  = KarutaApp(root, features=features)
-    root.protocol("WM_DELETE_WINDOW", lambda: [release_key(key), root.destroy()])
+
+    if LICENSED_MODE:
+        root.protocol("WM_DELETE_WINDOW", lambda: [release_key(key), root.destroy()])
+    else:
+        root.protocol("WM_DELETE_WINDOW", root.destroy)
+
     root.mainloop()
 
 
