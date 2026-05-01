@@ -15,6 +15,31 @@ from datetime import datetime, timedelta
 from config import KARUTA_ID, DROP_JITTER_MIN, DROP_JITTER_MAX
 
 LU_COOLDOWN_SECS = 11  # k!lu has a 10s cooldown — we wait 11 to be safe
+DROP_NUMBER_EMOJIS = ["1️⃣", "2️⃣", "3️⃣", "4️⃣"]
+
+
+def _drop_cooldown_fallback_secs(app):
+    getter = getattr(app, "get_drop_cooldown_secs", None)
+    if callable(getter):
+        try:
+            return int(getter())
+        except Exception:
+            pass
+    return 30 * 60
+
+
+def _classify_drop_reactions(msg):
+    """Split a drop message's reactions into numeric picks vs wildcards."""
+    numeric = []
+    wildcards = []
+    for reaction in getattr(msg, "reactions", []) or []:
+        emoji = getattr(reaction, "emoji", reaction)
+        emoji_str = str(emoji)
+        if emoji_str in DROP_NUMBER_EMOJIS:
+            numeric.append(emoji_str)
+        else:
+            wildcards.append(emoji)
+    return numeric, wildcards
 
 
 # ─────────────────────────────────────────────
@@ -258,10 +283,10 @@ async def automation_loop(app, client, channel_id):
             reminders = await fetch_reminders(app, client, channel)
 
             # ── Dynamic sleep — wait for shortest enabled macro cooldown ──
-            # Cooldown fallbacks (seconds) when reminder is unknown:
-            #   drop=30m, visit=2h, vote=12h, work=12h, daily=24h
+            # Cooldown fallbacks (seconds) when reminder is unknown.
+            # Drop can vary per account if a blessing changes its cadence.
             MACRO_COOLDOWNS = {
-                "Drop":  ("macro_drop",  30 * 60),
+                "Drop":  ("macro_drop",  _drop_cooldown_fallback_secs(app)),
                 "Visit": ("macro_visit", 2 * 3600),
                 "Vote":  ("macro_vote",  12 * 3600),
                 "Work":  ("macro_work",  12 * 3600),
@@ -285,8 +310,8 @@ async def automation_loop(app, client, channel_id):
                     candidates.append((key, int(rem)))
 
             if not candidates:
-                # No macros enabled — sleep 30 min default
-                base_secs = 30 * 60
+                # No macros enabled — sleep based on the account's drop cadence.
+                base_secs = _drop_cooldown_fallback_secs(app)
                 shortest_key = "idle"
             else:
                 shortest_key, base_secs = min(candidates, key=lambda x: x[1])
@@ -466,9 +491,11 @@ async def do_drop(app, client, channel):
             app.ui_log("⚠ No drop message detected.")
             return
 
+        embed_card_count = max((len(embed.fields) for embed in drop_msg.embeds), default=0)
+
         # OCR parse
         cards = None
-        if drop_msg.attachments:
+        if drop_msg.attachments and embed_card_count <= 3:
             from ocr import parse_drop_image, check_easyocr
             ok, _ = check_easyocr()
             if ok:
@@ -476,6 +503,8 @@ async def do_drop(app, client, channel):
                     drop_msg.attachments[0].url,
                     log_fn=app.ui_log,
                 )
+        elif embed_card_count > 3:
+            app.ui_log(f"📋 Detected {embed_card_count} drop entries — using embed parsing instead of 3-card OCR")
 
         if not cards:
             cards = parse_drop_embed(app, drop_msg)
@@ -503,10 +532,31 @@ async def do_drop(app, client, channel):
         else:
             best_idx = pick_best_card(app, cards)
             best     = cards[best_idx]
-            emoji    = ["1️⃣", "2️⃣", "3️⃣"][best_idx]
+            reaction_idx = best.get("index", best_idx)
+            if reaction_idx >= len(DROP_NUMBER_EMOJIS):
+                app.ui_log(f"⚠ Unsupported drop card index {reaction_idx + 1} — cannot react")
+                return
+            emoji = DROP_NUMBER_EMOJIS[reaction_idx]
+
+            # Re-fetch the message so we can see any wildcard / event reactions
+            # Karuta attached after the initial message event.
+            try:
+                drop_msg = await channel.fetch_message(drop_msg.id)
+            except Exception as exc:
+                app.ui_log(f"   ⚠ Could not refresh drop message for reactions: {exc}")
+
+            _, wildcard_emojis = _classify_drop_reactions(drop_msg)
+            seen_wildcards = set()
+            for wildcard_emoji in wildcard_emojis:
+                wildcard_key = str(wildcard_emoji)
+                if wildcard_key in seen_wildcards:
+                    continue
+                seen_wildcards.add(wildcard_key)
+                app.ui_log(f"✨ Pressing wildcard reaction first: {wildcard_emoji}")
+                await drop_msg.add_reaction(wildcard_emoji)
 
             app.ui_log(
-                f"⭐ Grabbing card {best_idx+1}: {best['name']} "
+                f"⭐ Grabbing card {reaction_idx+1}: {best['name']} "
                 f"(print: #{best['print']}, wishes: {best['wishes']})")
             await drop_msg.add_reaction(emoji)
 
@@ -625,7 +675,9 @@ def _parse_multi_result(app, msg, series_hint):
 
     Strategy:
       1. If series_hint is set, pick the entry whose series best matches it.
-      2. Tie-break (or no hint): pick the entry with the highest wishlist count.
+      2. If the hinted series is not present in the visible top results, assume
+         the card has 0 wishlists rather than borrowing another series' count.
+      3. Tie-break (or no hint): pick the entry with the highest wishlist count.
 
     Returns (wishes: int, matched_series: str, matched_name: str) or None on parse failure.
     """
@@ -684,6 +736,14 @@ def _parse_multi_result(app, msg, series_hint):
         overlap = len(hint_words & cand_words)
         return overlap / len(hint_words)
 
+    if series_hint:
+        best_score = max(_series_score(e) for e in entries)
+        if best_score <= 0:
+            app.ui_log(
+                f"   ⚠ Series {series_hint!r} not found in top {len(entries)} k!lu results — assuming ♡0"
+            )
+            return 0, "", ""
+
     best = max(entries, key=lambda e: (_series_score(e), e["wishes"]))
     return best["wishes"], best["series"], best["name"]
 
@@ -730,7 +790,10 @@ async def lookup_wishes(app, client, channel, card_name, series_hint=None):
         result = _parse_multi_result(app, msg, series_hint)
         if result is not None:
             wishes, matched_series, matched_name = result
-            app.ui_log(f"   ♥ Matched: {matched_name!r} ({matched_series}) — ♡{wishes}")
+            if matched_name or matched_series:
+                app.ui_log(f"   ♥ Matched: {matched_name!r} ({matched_series}) — ♡{wishes}")
+            else:
+                app.ui_log("   ♥ No matching series in visible results — treating as ♡0")
             return wishes
         app.ui_log("   ⚠ Could not parse multi-result screen — treating as unknown")
         return None
@@ -1734,7 +1797,7 @@ def parse_drop_embed(app, message):
     cards = []
     try:
         for embed in message.embeds:
-            for i, field in enumerate(embed.fields[:3]):
+            for i, field in enumerate(embed.fields[:4]):
                 name      = field.name.strip() if field.name else f"Card {i+1}"
                 value     = str(field.value or "")
                 match     = re.search(r'(\d+)\s*[·•\-]\s*\d', value)

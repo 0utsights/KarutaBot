@@ -7,7 +7,8 @@ import os
 from datetime import datetime
 
 from config import (C, APP_NAME, APP_VERSION, ADMIN_PASSWORD, MAX_DROPS_PER_DAY,
-                    DROP_JITTER_MIN, DROP_JITTER_MAX, load_config, save_config, default_account)
+                    DROP_COOLDOWN_MIN, DROP_JITTER_MIN, DROP_JITTER_MAX,
+                    load_config, save_config, default_account)
 from license import start_heartbeat, release_key
 import session as session_api
 from bot import run_discord_loop, do_drop
@@ -379,6 +380,8 @@ class AccountPanel:
         self.vote_mode_var    = tk.StringVar(value=self.data.get("vote_mode", "auto"))
         self.show_browser_var = tk.BooleanVar(value=self.data.get("show_browser", False))
         self.auto_burn_var    = tk.BooleanVar(value=self.data.get("auto_burn", False))
+        blessings = self.data.get("blessings", {})
+        self.blessing_leadership_var = tk.BooleanVar(value=blessings.get("leadership", False))
 
         # ── Button row ──
         _divider(self.frame, pady=6)
@@ -673,6 +676,31 @@ class AccountPanel:
                  font=("Segoe UI", 8), bg=C["card2"], fg=C["muted"], anchor="w").pack(anchor="w")
 
         # ════════════════════════════════════════════
+        #  BLESSINGS
+        # ════════════════════════════════════════════
+        blessing_section = tk.Frame(content, bg=C["card2"])
+        blessing_section.pack(fill="x", padx=20, pady=(0, 10))
+        tk.Label(blessing_section, text="BLESSINGS", font=("Segoe UI", 8, "bold"),
+                 bg=C["card2"], fg=C["muted"]).pack(anchor="w", padx=12, pady=(10, 6))
+
+        leadership_row = tk.Frame(blessing_section, bg=C["card2"])
+        leadership_row.pack(fill="x", padx=12, pady=(0, 10))
+        leadership_toggle_frame = tk.Frame(leadership_row, bg=C["card2"])
+        leadership_toggle_frame.pack(side="right", padx=(8, 0))
+        _ToggleSwitch(leadership_toggle_frame, self.blessing_leadership_var,
+                      on_color=C["yellow"], off_color=C["muted"]).pack()
+        leadership_info = tk.Frame(leadership_row, bg=C["card2"])
+        leadership_info.pack(side="left", fill="x", expand=True)
+        tk.Label(leadership_info, text="✨ Leadership", font=("Segoe UI", 10, "bold"),
+                 bg=C["card2"], fg=C["text"], anchor="w").pack(anchor="w")
+        tk.Label(
+            leadership_info,
+            text="Halves drop cooldown to 15m. Used for drop scheduling when reminders are unavailable.",
+            font=("Segoe UI", 8), bg=C["card2"], fg=C["muted"],
+            anchor="w", justify="left", wraplength=300,
+        ).pack(anchor="w")
+
+        # ════════════════════════════════════════════
         #  VOTE SETTINGS
         # ════════════════════════════════════════════
         vote_section = tk.Frame(content, bg=C["card2"])
@@ -813,6 +841,12 @@ class AccountPanel:
         color = C["accent3"] if self.drops_today < limit else C["red"]
         self.drops_label.config(text=f"{self.drops_today} / {limit}", fg=color)
 
+    def get_drop_cooldown_secs(self):
+        cooldown_min = DROP_COOLDOWN_MIN
+        if self.blessing_leadership_var.get():
+            cooldown_min = max(1, DROP_COOLDOWN_MIN // 2)
+        return cooldown_min * 60
+
     def update_reminders(self, reminders):
         self._reminder_seconds    = dict(reminders)
         self._reminder_updated_at = datetime.now()
@@ -882,6 +916,9 @@ class AccountPanel:
             "visit_tag":       self.visit_tag_var.get().strip(),
             "auto_burn":       self.auto_burn_var.get(),
             "enabled":         True,
+            "blessings": {
+                "leadership": self.blessing_leadership_var.get(),
+            },
             "macros": {
                 "daily":  self.macro_daily.get(),
                 "vote":   self.macro_vote.get(),

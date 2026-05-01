@@ -58,6 +58,9 @@ def default_account():
         "visit_tag":  "visit",
         "auto_burn":  False,
         "enabled":    True,
+        "blessings": {
+            "leadership": False,
+        },
         # ── Per-account macro toggles ──
         "macros": {
             "daily":  True,
@@ -83,10 +86,17 @@ def load_config():
                 "jitter_min":  DROP_JITTER_MIN,
                 "jitter_max":  DROP_JITTER_MAX,
                 "enabled":    True,
+                "blessings": {
+                    "leadership": False,
+                },
             }]}
-        # Migrate accounts missing macros dict
+        # Migrate accounts missing blessing / macros data
+        default_blessings = default_account()["blessings"]
         default_macros = default_account()["macros"]
         for acc in data.get("accounts", []):
+            blessings = acc.setdefault("blessings", {})
+            for key, value in default_blessings.items():
+                blessings.setdefault(key, value)
             if "macros" not in acc:
                 acc["macros"] = dict(default_macros)
         return data
