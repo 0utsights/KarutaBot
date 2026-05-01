@@ -3,10 +3,22 @@ import tkinter as tk
 
 from config import C, FULL_ACCESS_FEATURES, LICENSED_MODE
 from gui import KarutaApp
-from license import release_key, start_heartbeat, validate_key
+
+
+def _load_license_api():
+    try:
+        from license import release_key, start_heartbeat, validate_key
+    except ModuleNotFoundError as exc:
+        raise RuntimeError(
+            "LICENSED_MODE is enabled, but license.py is not available in this build."
+        ) from exc
+
+    return release_key, start_heartbeat, validate_key
 
 
 def show_key_screen():
+    _, _, validate_key = _load_license_api()
+
     win = tk.Tk()
     win.title("Aeyori — Activate")
     win.geometry("360x220")
@@ -81,6 +93,7 @@ def launch():
     features = dict(FULL_ACCESS_FEATURES)
 
     if LICENSED_MODE:
+        release_key, start_heartbeat, _ = _load_license_api()
         key, features = show_key_screen()
         if not key:
             return
