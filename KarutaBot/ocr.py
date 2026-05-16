@@ -122,11 +122,11 @@ def _clean_print(raw):
     fixed = raw.strip().replace('O', '0').replace('o', '0').replace('l', '1')
     if '.' in fixed:
         before = fixed.split('.')[0]
-        m = re.search(r'\d{3,}', before)
+        m = re.search(r'\d+', before)
         if m:
             return int(m.group())
     for group in re.findall(r'\d+', fixed):
-        if len(group) >= 3:
+        if len(group) >= 1:
             return int(group)
     return 99999
 
@@ -219,9 +219,7 @@ def parse_drop_image(image_url, log_fn=None):
             print_crop.save(os.path.join(DEBUG_DIR,  f"card{i+1}_print_processed.png"))
 
         raw_name   = _ocr_text(reader, name_crop)
-
         raw_series = _ocr_text(reader, series_crop)
-
         raw_print  = _ocr_print(reader, print_crop)
 
         log(f"Card {i+1} raw — name: {raw_name!r}  series: {raw_series!r}  print: {raw_print!r}")

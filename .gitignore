@@ -1,6 +1,9 @@
 dist/
 build/
 *.spec
+KarutaBot/dist/
+KarutaBot/build/
+KarutaBot/*.spec
 config.json
 ocr_debug
 vote_debug/
