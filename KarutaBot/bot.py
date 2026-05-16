@@ -17,6 +17,79 @@ from config import KARUTA_ID, DROP_JITTER_MIN, DROP_JITTER_MAX
 LU_COOLDOWN_SECS = 11  # k!lu has a 10s cooldown — we wait 11 to be safe
 
 
+def _get_app_cooldown_secs(app, getter_name, fallback):
+    getter = getattr(app, getter_name, None)
+    if callable(getter):
+        try:
+            return int(getter())
+        except Exception:
+            pass
+    return fallback
+
+
+def _drop_cooldown_fallback_secs(app):
+    return _get_app_cooldown_secs(app, "get_drop_cooldown_secs", 30 * 60)
+
+
+def _visit_cooldown_fallback_secs(app):
+    return _get_app_cooldown_secs(app, "get_visit_cooldown_secs", 2 * 3600)
+
+
+def _work_cooldown_fallback_secs(app):
+    return _get_app_cooldown_secs(app, "get_work_cooldown_secs", 12 * 3600)
+
+
+def _app_has_blessing(app, key):
+    getter = getattr(app, "has_blessing", None)
+    if callable(getter):
+        try:
+            return bool(getter(key))
+        except Exception:
+            pass
+    return False
+
+
+def _grab_macro_enabled(app):
+    macro_var = getattr(app, "macro_grab", None)
+    return macro_var.get() if macro_var else True
+
+
+def _format_cooldown_short(seconds):
+    seconds = max(0, int(seconds))
+    if seconds >= 3600:
+        hours = seconds // 3600
+        minutes = (seconds % 3600) // 60
+        return f"{hours}h {minutes}m" if minutes else f"{hours}h"
+    if seconds >= 60:
+        minutes = seconds // 60
+        secs = seconds % 60
+        return f"{minutes}m {secs:02d}s" if secs else f"{minutes}m"
+    return f"{seconds}s"
+
+
+def _next_drop_cycle_secs(app, reminders):
+    fallback = _drop_cooldown_fallback_secs(app)
+    drop_wait = reminders.get("Drop")
+    grab_wait = reminders.get("Grab") if _grab_macro_enabled(app) else None
+
+    if drop_wait is None:
+        if grab_wait is not None and grab_wait > fallback:
+            return int(grab_wait)
+        return fallback
+
+    if drop_wait == 0:
+        if _app_has_blessing(app, "generosity"):
+            if grab_wait is not None and grab_wait > 0:
+                return int(grab_wait)
+            return 0
+        return fallback
+
+    effective_wait = int(drop_wait)
+    if grab_wait is not None and grab_wait > effective_wait:
+        effective_wait = int(grab_wait)
+    return effective_wait
+
+
 # ─────────────────────────────────────────────
 #  Safe message sending — retries on 503 / 429
 # ─────────────────────────────────────────────
@@ -207,10 +280,16 @@ async def automation_loop(app, client, channel_id):
             async def _run_drop():
                 if getattr(app, "macro_drop", None) and app.macro_drop.get():
                     drop_cooldown = reminders.get("Drop")
+                    grab_cooldown = reminders.get("Grab")
                     if app.drops_today >= app.max_drops_var.get():
                         app.ui_log(f"⚠ Daily drop limit reached ({app.max_drops_var.get()}). Skipping drop.")
                     elif drop_cooldown and drop_cooldown > 0:
                         app.ui_log(f"⏱ Drop on cooldown ({int(drop_cooldown // 60)}m) — skipping drop this cycle")
+                    elif _grab_macro_enabled(app) and grab_cooldown and grab_cooldown > 0:
+                        app.ui_log(
+                            f"⏱ Grab on cooldown ({_format_cooldown_short(grab_cooldown)}) "
+                            f"— skipping drop to avoid wasting it"
+                        )
                     else:
                         await do_drop(app, client, channel)
 
@@ -258,17 +337,17 @@ async def automation_loop(app, client, channel_id):
             reminders = await fetch_reminders(app, client, channel)
 
             # ── Dynamic sleep — wait for shortest enabled macro cooldown ──
-            # Cooldown fallbacks (seconds) when reminder is unknown:
-            #   drop=30m, visit=2h, vote=12h, work=12h, daily=24h
             MACRO_COOLDOWNS = {
-                "Drop":  ("macro_drop",  30 * 60),
-                "Visit": ("macro_visit", 2 * 3600),
+                "Visit": ("macro_visit", _visit_cooldown_fallback_secs(app)),
                 "Vote":  ("macro_vote",  12 * 3600),
-                "Work":  ("macro_work",  12 * 3600),
+                "Work":  ("macro_work",  _work_cooldown_fallback_secs(app)),
                 "Daily": ("macro_daily", 24 * 3600),
             }
 
             candidates = []
+            if getattr(app, "macro_drop", None) and app.macro_drop.get():
+                candidates.append(("Drop", _next_drop_cycle_secs(app, reminders)))
+
             for key, (attr, fallback) in MACRO_COOLDOWNS.items():
                 macro_var = getattr(app, attr, None)
                 if not (macro_var and macro_var.get()):
@@ -285,8 +364,8 @@ async def automation_loop(app, client, channel_id):
                     candidates.append((key, int(rem)))
 
             if not candidates:
-                # No macros enabled — sleep 30 min default
-                base_secs = 30 * 60
+                # No macros enabled — sleep based on the account's drop cadence.
+                base_secs = _drop_cooldown_fallback_secs(app)
                 shortest_key = "idle"
             else:
                 shortest_key, base_secs = min(candidates, key=lambda x: x[1])

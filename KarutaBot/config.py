@@ -30,6 +30,15 @@ FULL_ACCESS_FEATURES = {
     "multi_account": True,
 }
 
+DEFAULT_BLESSINGS = {
+    "dexterity": False,
+    "evasion": False,
+    "leadership": False,
+    "generosity": False,
+    "empathy": False,
+    "diligence": False,
+}
+
 # ─────────────────────────────────────────────
 #  Glass Dark Color Theme
 # ─────────────────────────────────────────────
@@ -70,9 +79,7 @@ def default_account():
         "visit_tag": "visit",
         "auto_burn": False,
         "enabled": True,
-        "blessings": {
-            "leadership": False,
-        },
+        "blessings": dict(DEFAULT_BLESSINGS),
         "macros": {
             "daily": True,
             "vote": True,
@@ -98,9 +105,7 @@ def load_config():
                 "jitter_min": DROP_JITTER_MIN,
                 "jitter_max": DROP_JITTER_MAX,
                 "enabled": True,
-                "blessings": {
-                    "leadership": False,
-                },
+                "blessings": dict(DEFAULT_BLESSINGS),
             }]}
 
         defaults = default_account()

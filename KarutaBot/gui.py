@@ -379,6 +379,13 @@ class AccountPanel:
         self.vote_mode_var    = tk.StringVar(value=self.data.get("vote_mode", "auto"))
         self.show_browser_var = tk.BooleanVar(value=self.data.get("show_browser", False))
         self.auto_burn_var    = tk.BooleanVar(value=self.data.get("auto_burn", False))
+        blessings = self.data.get("blessings", {})
+        self.blessing_dexterity_var = tk.BooleanVar(value=blessings.get("dexterity", False))
+        self.blessing_evasion_var = tk.BooleanVar(value=blessings.get("evasion", False))
+        self.blessing_leadership_var = tk.BooleanVar(value=blessings.get("leadership", False))
+        self.blessing_generosity_var = tk.BooleanVar(value=blessings.get("generosity", False))
+        self.blessing_empathy_var = tk.BooleanVar(value=blessings.get("empathy", False))
+        self.blessing_diligence_var = tk.BooleanVar(value=blessings.get("diligence", False))
 
         # ── Button row ──
         _divider(self.frame, pady=6)
@@ -674,6 +681,64 @@ class AccountPanel:
                  font=("Segoe UI", 8), bg=C["card2"], fg=C["muted"], anchor="w").pack(anchor="w")
 
         # ════════════════════════════════════════════
+        #  BLESSINGS
+        # ════════════════════════════════════════════
+        blessing_section = tk.Frame(content, bg=C["card2"])
+        blessing_section.pack(fill="x", padx=20, pady=(0, 10))
+        tk.Label(blessing_section, text="BLESSINGS", font=("Segoe UI", 8, "bold"),
+                 bg=C["card2"], fg=C["muted"]).pack(anchor="w", padx=12, pady=(10, 6))
+
+        def _add_blessing_row(var, title, description):
+            row = tk.Frame(blessing_section, bg=C["card2"])
+            row.pack(fill="x", padx=12, pady=(0, 10))
+
+            toggle_frame = tk.Frame(row, bg=C["card2"])
+            toggle_frame.pack(side="right", padx=(8, 0))
+            _ToggleSwitch(toggle_frame, var, on_color=C["yellow"], off_color=C["muted"]).pack()
+
+            info = tk.Frame(row, bg=C["card2"])
+            info.pack(side="left", fill="x", expand=True)
+            tk.Label(info, text=f"✨ {title}", font=("Segoe UI", 10, "bold"),
+                     bg=C["card2"], fg=C["text"], anchor="w").pack(anchor="w")
+            tk.Label(
+                info,
+                text=description,
+                font=("Segoe UI", 8), bg=C["card2"], fg=C["muted"],
+                anchor="w", justify="left", wraplength=300,
+            ).pack(anchor="w")
+
+        _add_blessing_row(
+            self.blessing_dexterity_var,
+            "Dexterity",
+            "Halves grab cooldown. Used when checking whether grab is ready before starting a drop.",
+        )
+        _add_blessing_row(
+            self.blessing_evasion_var,
+            "Evasion",
+            "Gives grab a 25% chance to stay ready. The bot respects the live Grab reminder before dropping.",
+        )
+        _add_blessing_row(
+            self.blessing_leadership_var,
+            "Leadership",
+            "Halves drop cooldown to 15m. Used for drop scheduling when reminders are unavailable.",
+        )
+        _add_blessing_row(
+            self.blessing_generosity_var,
+            "Generosity",
+            "Gives drop a 25% chance to stay ready. If Drop still shows ready after use, the next cycle keeps it reusable.",
+        )
+        _add_blessing_row(
+            self.blessing_empathy_var,
+            "Empathy",
+            "Reduces visit fallback cooldown to 1 hour when reminders are unavailable.",
+        )
+        _add_blessing_row(
+            self.blessing_diligence_var,
+            "Diligence",
+            "Reduces work fallback cooldown to 8 hours when reminders are unavailable.",
+        )
+
+        # ════════════════════════════════════════════
         #  VOTE SETTINGS
         # ════════════════════════════════════════════
         vote_section = tk.Frame(content, bg=C["card2"])
@@ -814,6 +879,27 @@ class AccountPanel:
         color = C["accent3"] if self.drops_today < limit else C["red"]
         self.drops_label.config(text=f"{self.drops_today} / {limit}", fg=color)
 
+    def has_blessing(self, key):
+        var = getattr(self, f"blessing_{key}_var", None)
+        if var is None:
+            return False
+        try:
+            return bool(var.get())
+        except Exception:
+            return False
+
+    def get_drop_cooldown_secs(self):
+        cooldown_min = DROP_COOLDOWN_MIN
+        if self.has_blessing("leadership"):
+            cooldown_min = max(1, DROP_COOLDOWN_MIN // 2)
+        return cooldown_min * 60
+
+    def get_visit_cooldown_secs(self):
+        return 3600 if self.has_blessing("empathy") else 2 * 3600
+
+    def get_work_cooldown_secs(self):
+        return 8 * 3600 if self.has_blessing("diligence") else 12 * 3600
+
     def update_reminders(self, reminders):
         self._reminder_seconds    = dict(reminders)
         self._reminder_updated_at = datetime.now()
@@ -883,6 +969,14 @@ class AccountPanel:
             "visit_tag":       self.visit_tag_var.get().strip(),
             "auto_burn":       self.auto_burn_var.get(),
             "enabled":         True,
+            "blessings": {
+                "dexterity": self.blessing_dexterity_var.get(),
+                "evasion": self.blessing_evasion_var.get(),
+                "leadership": self.blessing_leadership_var.get(),
+                "generosity": self.blessing_generosity_var.get(),
+                "empathy": self.blessing_empathy_var.get(),
+                "diligence": self.blessing_diligence_var.get(),
+            },
             "macros": {
                 "daily":  self.macro_daily.get(),
                 "vote":   self.macro_vote.get(),
