@@ -293,20 +293,26 @@ async def automation_loop(app, client, channel_id):
             drop_goes_first = random.random() < 0.80
 
             async def _run_drop():
+                result = "disabled"
                 if getattr(app, "macro_drop", None) and app.macro_drop.get():
                     drop_cooldown = reminders.get("Drop")
                     grab_cooldown = reminders.get("Grab")
                     if app.drops_today >= app.max_drops_var.get():
                         app.ui_log(f"⚠ Daily drop limit reached ({app.max_drops_var.get()}). Skipping drop.")
+                        result = "limit"
                     elif drop_cooldown and drop_cooldown > 0:
                         app.ui_log(f"⏱ Drop on cooldown ({int(drop_cooldown // 60)}m) — skipping drop this cycle")
+                        result = "cooldown"
                     elif _grab_macro_enabled(app) and grab_cooldown and grab_cooldown > 0:
                         app.ui_log(
                             f"⏱ Grab on cooldown ({_format_cooldown_short(grab_cooldown)}) "
                             f"— skipping drop to avoid wasting it"
                         )
+                        result = "grab_cooldown"
                     else:
                         await do_drop(app, client, channel)
+                        result = "dropped"
+                return result
 
             async def _run_secondaries():
                 """Run vote, daily, work, visit in randomized order."""
@@ -340,50 +346,50 @@ async def automation_loop(app, client, channel_id):
                     await asyncio.sleep(pause)
 
             if drop_goes_first:
-                await _run_drop()
+                drop_result = await _run_drop()
                 await _run_secondaries()
             else:
                 app.ui_log("🎲 Humanized order: running secondary commands before drop this cycle")
                 await _run_secondaries()
-                await _run_drop()
+                drop_result = await _run_drop()
 
-            # Re-fetch reminders after all commands so badges and sleep duration are accurate
-            await asyncio.sleep(2)
-            reminders = await fetch_reminders(app, client, channel)
-
-            # ── Dynamic sleep — wait for shortest enabled macro cooldown ──
-            MACRO_COOLDOWNS = {
-                "Visit": ("macro_visit", _visit_cooldown_fallback_secs(app)),
-                "Vote":  ("macro_vote",  12 * 3600),
-                "Work":  ("macro_work",  _work_cooldown_fallback_secs(app)),
-                "Daily": ("macro_daily", 24 * 3600),
-            }
-
-            candidates = []
+            # ── Drop-based sleep — the cycle wakes on drop cadence, and the
+            #    ready secondaries run during that drop pass. If drop is disabled,
+            #    fall back to the shortest enabled secondary macro cooldown.
             if getattr(app, "macro_drop", None) and app.macro_drop.get():
-                candidates.append(("Drop", _next_drop_cycle_secs(app, reminders)))
-
-            for key, (attr, fallback) in MACRO_COOLDOWNS.items():
-                macro_var = getattr(app, attr, None)
-                if not (macro_var and macro_var.get()):
-                    continue  # macro disabled — skip
-
-                rem = reminders.get(key)
-                if rem is None:
-                    # Unknown — use fallback cooldown
-                    candidates.append((key, fallback))
-                elif rem == 0:
-                    # Ready now — still just ran it, use fallback as next cycle
-                    candidates.append((key, fallback))
+                if drop_result == "dropped":
+                    shortest_key = "Drop"
+                    base_secs = _drop_cooldown_fallback_secs(app)
+                elif drop_result == "grab_cooldown":
+                    shortest_key = "Grab"
+                    base_secs = max(1, int(reminders.get("Grab") or LU_COOLDOWN_SECS))
                 else:
-                    candidates.append((key, int(rem)))
-
-            if not candidates:
-                # No macros enabled — sleep based on the account's drop cadence.
-                base_secs = _drop_cooldown_fallback_secs(app)
-                shortest_key = "idle"
+                    shortest_key = "Drop"
+                    base_secs = _next_drop_cycle_secs(app, reminders)
             else:
-                shortest_key, base_secs = min(candidates, key=lambda x: x[1])
+                MACRO_COOLDOWNS = {
+                    "Visit": ("macro_visit", _visit_cooldown_fallback_secs(app)),
+                    "Vote":  ("macro_vote",  12 * 3600),
+                    "Work":  ("macro_work",  _work_cooldown_fallback_secs(app)),
+                    "Daily": ("macro_daily", 24 * 3600),
+                }
+                candidates = []
+                for key, (attr, fallback) in MACRO_COOLDOWNS.items():
+                    macro_var = getattr(app, attr, None)
+                    if not (macro_var and macro_var.get()):
+                        continue
+
+                    rem = reminders.get(key)
+                    if rem is None or rem == 0:
+                        candidates.append((key, fallback))
+                    else:
+                        candidates.append((key, int(rem)))
+
+                if not candidates:
+                    base_secs = _drop_cooldown_fallback_secs(app)
+                    shortest_key = "idle"
+                else:
+                    shortest_key, base_secs = min(candidates, key=lambda x: x[1])
 
             jitter_min = getattr(app, "jitter_min_var", None)
             jitter_max = getattr(app, "jitter_max_var", None)
