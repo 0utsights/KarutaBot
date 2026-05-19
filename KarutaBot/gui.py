@@ -4,6 +4,7 @@ import threading
 import webbrowser
 import json
 import os
+import time
 from datetime import datetime
 
 from config import (C, APP_NAME, APP_VERSION, LICENSED_MODE,
@@ -285,11 +286,13 @@ class AccountPanel:
         self.bot_thread     = None
         self.running        = False
         self.next_drop_time = None
+        self.next_drop_deadline = None
         self.drops_today    = 0
         self.grabbed_today  = 0
         self.last_reset     = datetime.now().date()
         self._reminder_seconds    = {}
         self._reminder_updated_at = None
+        self._reminder_updated_mono = None
 
         # ── Per-account macro toggles ──
         macros = account_data.get("macros", {})
@@ -903,32 +906,45 @@ class AccountPanel:
     def update_reminders(self, reminders):
         self._reminder_seconds    = dict(reminders)
         self._reminder_updated_at = datetime.now()
+        self._reminder_updated_mono = time.monotonic()
 
     def _tick_reminders(self):
-        if self._reminder_updated_at is not None and self._reminder_seconds:
-            elapsed = (datetime.now() - self._reminder_updated_at).total_seconds()
-            for key, lbl in self._reminder_labels.items():
-                raw = self._reminder_seconds.get(key)
-                if raw is None:
-                    lbl.config(text="?", fg=C["muted"])
-                elif raw == 0:
-                    lbl.config(text="READY", fg=C["accent3"])
-                else:
-                    remaining = max(0, int(raw) - int(elapsed))
-                    if remaining == 0:
+        try:
+            if not self.outer.winfo_exists():
+                return
+            if self._reminder_updated_mono is not None and self._reminder_seconds:
+                elapsed = max(0.0, time.monotonic() - self._reminder_updated_mono)
+                for key, lbl in self._reminder_labels.items():
+                    if not lbl.winfo_exists():
+                        continue
+                    raw = self._reminder_seconds.get(key)
+                    if raw is None:
+                        lbl.config(text="?", fg=C["muted"])
+                    elif raw == 0:
                         lbl.config(text="READY", fg=C["accent3"])
                     else:
-                        h = remaining // 3600
-                        m = (remaining % 3600) // 60
-                        s = remaining % 60
-                        if h > 0:
-                            txt = f"{h}h {m}m"
-                        elif m > 0:
-                            txt = f"{m}m {s:02d}s"
+                        remaining = max(0, int(raw) - int(elapsed))
+                        if remaining == 0:
+                            lbl.config(text="READY", fg=C["accent3"])
                         else:
-                            txt = f"{s}s"
-                        lbl.config(text=txt, fg=C["yellow"])
-        self.app.root.after(1000, self._tick_reminders)
+                            h = remaining // 3600
+                            m = (remaining % 3600) // 60
+                            s = remaining % 60
+                            if h > 0:
+                                txt = f"{h}h {m}m"
+                            elif m > 0:
+                                txt = f"{m}m {s:02d}s"
+                            else:
+                                txt = f"{s}s"
+                            lbl.config(text=txt, fg=C["yellow"])
+        except tk.TclError:
+            pass
+        finally:
+            try:
+                if self.outer.winfo_exists():
+                    self.app.root.after(1000, self._tick_reminders)
+            except tk.TclError:
+                pass
 
     def reset_daily_if_needed(self):
         today = datetime.now().date()
@@ -942,18 +958,29 @@ class AccountPanel:
         try:
             if not self.timer_label.winfo_exists():
                 return
-            if self.next_drop_time and self.running:
+            remaining_secs = None
+            if self.next_drop_deadline and self.running:
+                remaining_secs = max(0, int(self.next_drop_deadline - time.monotonic()))
+            elif self.next_drop_time and self.running:
                 remaining = self.next_drop_time - datetime.now()
-                if remaining.total_seconds() > 0:
-                    mins, secs = divmod(int(remaining.total_seconds()), 60)
+                remaining_secs = max(0, int(remaining.total_seconds()))
+
+            if remaining_secs is not None:
+                if remaining_secs > 0:
+                    mins, secs = divmod(remaining_secs, 60)
                     self.timer_label.config(text=f"{mins:02d}:{secs:02d}")
                 else:
                     self.timer_label.config(text="NOW")
             else:
                 self.timer_label.config(text="--:--")
-            self.app.root.after(1000, self._update_timer)
         except tk.TclError:
             pass
+        finally:
+            try:
+                if self.outer.winfo_exists():
+                    self.app.root.after(1000, self._update_timer)
+            except tk.TclError:
+                pass
 
     def get_data(self):
         return {
@@ -1011,6 +1038,8 @@ class AccountPanel:
         self.running = True
         self.drops_today   = 0
         self.grabbed_today = 0
+        self.next_drop_time = None
+        self.next_drop_deadline = None
         self.start_btn.config(state="disabled")
         self.stop_btn.config(state="normal")
         self.drop_btn.config(state="normal")
@@ -1027,6 +1056,8 @@ class AccountPanel:
 
     def stop_bot(self):
         self.running = False
+        self.next_drop_time = None
+        self.next_drop_deadline = None
         self.start_btn.config(state="normal")
         self.stop_btn.config(state="disabled")
         self.drop_btn.config(state="disabled")

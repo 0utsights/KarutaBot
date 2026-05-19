@@ -154,6 +154,7 @@ def run_discord_loop(app, token, channel_id):
     asyncio.set_event_loop(loop)
     app.loop = loop
     app._last_lu_time = 0
+    app._last_lu_monotonic = 0.0
     app._automation_task = None
 
     client = discord.Client()
@@ -394,6 +395,7 @@ async def automation_loop(app, client, channel_id):
             delay  = base_secs + jitter
 
             app.next_drop_time = datetime.now() + timedelta(seconds=delay)
+            app.next_drop_deadline = time.monotonic() + delay
             rem_mins = int(base_secs // 60)
             tot_mins = int(delay // 60)
             tot_secs = int(delay % 60)
@@ -632,7 +634,9 @@ async def wait_for_drop(client, channel, timeout=15):
 # ─────────────────────────────────────────────
 async def _send_lu(app, client, channel, card_name):
     """Send k!lu <name only>, handle cooldown errors, return the response message or None."""
-    elapsed = time.time() - getattr(app, "_last_lu_time", 0)
+    elapsed = time.monotonic() - getattr(app, "_last_lu_monotonic", 0.0)
+    if elapsed < 0:
+        elapsed = LU_COOLDOWN_SECS
     if elapsed < LU_COOLDOWN_SECS:
         wait = LU_COOLDOWN_SECS - elapsed
         app.ui_log(f"   ⏳ k!lu cooldown — waiting {wait:.1f}s")
@@ -640,6 +644,7 @@ async def _send_lu(app, client, channel, card_name):
 
     await send_safe(channel, f"k!lu {card_name}", app)
     app._last_lu_time = time.time()
+    app._last_lu_monotonic = time.monotonic()
 
     def check(m):
         return (m.channel.id == channel.id and
@@ -656,6 +661,7 @@ async def _send_lu(app, client, channel, card_name):
             await asyncio.sleep(wait_secs)
             await send_safe(channel, f"k!lu {card_name}", app)
             app._last_lu_time = time.time()
+            app._last_lu_monotonic = time.monotonic()
             msg = await client.wait_for("message", check=check, timeout=15)
         return msg
     except asyncio.TimeoutError:
