@@ -169,15 +169,29 @@ def run_discord_loop(app, token, channel_id):
     asyncio.set_event_loop(loop)
     app.loop = loop
     app._last_lu_time = 0
+    app._automation_task = None
 
     client = discord.Client()
     app.client = client
 
     @client.event
     async def on_ready():
-        app.ui_log(f"✅ Logged in as {client.user.name}")
         app.ui_set_status(f"Online as {client.user.name}", online=True)
-        loop.create_task(automation_loop(app, client, channel_id))
+
+        task = getattr(app, "_automation_task", None)
+        if task and not task.done():
+            app.ui_log("🔄 Reconnected to Discord — automation loop already running")
+            return
+
+        app.ui_log(f"✅ Logged in as {client.user.name}")
+        task = loop.create_task(automation_loop(app, client, channel_id))
+        app._automation_task = task
+
+        def _clear_automation_task(done_task):
+            if getattr(app, "_automation_task", None) is done_task:
+                app._automation_task = None
+
+        task.add_done_callback(_clear_automation_task)
 
     async def runner():
         try:
