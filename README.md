@@ -1,14 +1,16 @@
 <div align="center">
 
-# Aeyori
+# Aeyori — Karuta Bot Automation
 
-**Open source automation bot for the Discord card game Karuta.**
+**Free open source macro for the Discord card game Karuta.**
 
-[![Python](https://img.shields.io/badge/Python-3.11+-blue?style=flat-square&logo=python&logoColor=white)](https://python.org)
-[![License](https://img.shields.io/badge/License-MIT-green?style=flat-square)](LICENSE)
-[![Discord](https://img.shields.io/badge/Karuta-Automation-7289da?style=flat-square&logo=discord&logoColor=white)](https://aeyori.com)
+[**aeyori.com**](https://aeyori.com)
 
-[**aeyori.com**](https://aeyori.com) — want a pre-packaged Windows exe with a user dashboard? Get it there, free.
+**Karuta macro · Karuta automation · Karuta bot · Karuta Discord bot**
+
+<br />
+
+<img src="screenshots/gui.webp" alt="Aeyori Main Interface" width="800" />
 
 </div>
 
@@ -16,7 +18,7 @@
 
 ## What It Does
 
-Aeyori automates the repetitive parts of Karuta so you can focus on the parts you actually enjoy.
+Aeyori is a Karuta macro that automates the repetitive parts of the game so you can focus on collecting.
 
 - **Auto drop & grab** — drops cards on a timer and grabs any card matching your wishlist using real-time OCR
 - **Wishlist detection** — looks up wish counts via `k!lu` and only grabs cards people actually want
@@ -31,7 +33,7 @@ Aeyori automates the repetitive parts of Karuta so you can focus on the parts yo
 ## Requirements
 
 - Python 3.11 or higher
-- Windows (the bot automates Discord — Linux/Mac support is limited, however does work)
+- Windows recommended (Linux/Mac supported but limited)
 - A Discord account that plays Karuta
 - Your Discord token (see below)
 
@@ -41,9 +43,10 @@ Aeyori automates the repetitive parts of Karuta so you can focus on the parts yo
 
 **1. Clone the repo**
 ```bash
-git clone https://github.com/0utsights/KarutaBot.git    <--- 0utsights with a zero not an o
+git clone https://github.com/0utsights/KarutaBot.git
 cd KarutaBot
 ```
+> Note: that's a zero in `0utsights`, not an O.
 
 **2. Create a virtual environment**
 ```bash
@@ -63,7 +66,7 @@ pip install -r requirements.txt
 
 > ⚠️ EasyOCR and PyTorch are large installs (~1GB). This will take a few minutes on first run.
 
-**4. Run the app**
+**4. Run**
 ```bash
 python KarutaBot/main.py
 ```
@@ -72,23 +75,21 @@ python KarutaBot/main.py
 
 ## Getting Your Discord Token
 
-(instructions on this can also be found in the app, if you need help don't hesitate to reach out to me on discord through my github profile)
+Instructions are also available in the app. If you need help, reach out on Discord through my GitHub profile.
 
 1. Open Discord in your **browser** (not the desktop app)
-2. Press `F12` to open DevTools → go to the **Console** tab
-3. Paste this and press Enter:
-```js
-(webpackChunkdiscord_app.push([[''],{},e=>{m=[];for(let c in e.c)m.push(e.c[c])}]),m).find(m=>m?.exports?.default?.getToken!==void 0).exports.default.getToken()
-```
-4. Copy the token that appears — paste it into the Aeyori token field
+2. Press `F12` to open DevTools → go to the **Network** tab
+3. Press `Ctrl+R` to reload the page
+4. In the filter box, type `api`
+5. Click any request that appears in the list
+6. Under **Headers**, find the `authorization` field
+7. Copy that value — paste it into the Aeyori token field
 
 ---
 
 ## Configuration
 
-On first launch a `config.json` is created in the same directory. You can edit this directly or use the in-app settings panel.
-
-Key settings per account:
+On first launch a `config.json` is created. You can edit it directly or use the in-app settings panel.
 
 | Setting | Description |
 |---|---|
@@ -103,8 +104,6 @@ Key settings per account:
 
 ## Packaging as a Windows Exe
 
-If you want a single portable `.exe` file instead of running from source:
-
 **1. Install PyInstaller**
 ```bash
 pip install pyinstaller
@@ -115,28 +114,26 @@ pip install pyinstaller
 pyinstaller --onefile --noconsole --name "Aeyori" --icon=KarutaBot/icon.ico --collect-all easyocr --collect-all torch KarutaBot/launcher.py
 ```
 
-> ⚠️ The build will take several minutes and the output exe will be ~250MB due to PyTorch being bundled.
+> ⚠️ Build takes several minutes. Output exe is ~250MB due to PyTorch being bundled. Windows will show a SmartScreen warning on first launch — click **More info → Run anyway**.
 
-**3. Find your exe**
+**3. Output**
 ```
 dist/Aeyori.exe
 ```
 
-Windows will show a SmartScreen warning on first launch since the exe is unsigned — click **More info → Run anyway**. This is expected for unsigned indie software.
-
 ---
 
-## How OCR Works
+## How the Karuta OCR Works
 
 When Karuta drops cards, Aeyori:
 
 1. Downloads the drop image from Discord
 2. Crops each card into name, series, and print number regions
-3. Runs EasyOCR on each region to extract text
-4. Cleans OCR noise with regex (fixes stray caps, missing spaces, border artifacts)
+3. Runs EasyOCR to extract text
+4. Cleans OCR noise with regex
 5. Sends `k!lu <name>` to look up wish counts
-6. If multiple results come back, fuzzy-matches against the detected series name
-7. Grabs the card with the highest wish count — skips if no wishlist matches
+6. Fuzzy-matches against the detected series name if multiple results return
+7. Grabs the highest-wished card — skips if no wishlist matches
 
 ---
 
@@ -144,14 +141,13 @@ When Karuta drops cards, Aeyori:
 
 ```
 KarutaBot/
-├── main.py        — entry point, launches the GUI
+├── main.py        — entry point
 ├── gui.py         — main window, account panels, settings
-├── bot.py         — Discord automation loop, drop/grab/daily logic
+├── bot.py         — Discord automation loop
 ├── ocr.py         — EasyOCR card image parser
 ├── vote.py        — Selenium voting automation
-├── session.py     — session tracking
 ├── config.py      — constants, config load/save
-├── launcher.py    — PyInstaller entry point with dependency installer
+├── launcher.py    — PyInstaller entry point
 └── icon.ico       — app icon
 requirements.txt
 ```
@@ -160,16 +156,10 @@ requirements.txt
 
 ## Want the Managed Version?
 
-If you don't want to deal with Python and just want a working `.exe` with automatic updates, a user dashboard, and session tracking — that's [aeyori.com](https://aeyori.com). Free tier available.
+[aeyori.com](https://aeyori.com) — pre-packaged Windows exe, user dashboard, no Python setup needed. Free.
 
 ---
 
 ## Disclaimer
 
-Aeyori automates a user account (selfbot), which is against Discord's Terms of Service. Use at your own risk. The authors are not responsible for any account actions taken by Discord.
-
----
-
-## License
-
-MIT — do whatever you want with it.
+Aeyori automates a user account (selfbot), which is against Discord's Terms of Service. Use at your own risk.
