@@ -16,6 +16,9 @@ from config import KARUTA_ID, DROP_JITTER_MIN, DROP_JITTER_MAX
 
 LU_COOLDOWN_SECS = 11  # k!lu has a 10s cooldown — we wait 11 to be safe
 DROP_NUMBER_EMOJIS = ["1️⃣", "2️⃣", "3️⃣", "4️⃣"]
+DROP_OCR_RETRY_DELAY_SECS = 2
+DROP_GRAB_CUTOFF_SECS = 50
+DROP_MIN_LOOKUP_TIME_LEFT_SECS = LU_COOLDOWN_SECS + 4
 
 
 def _get_app_cooldown_secs(app, getter_name, fallback):
@@ -103,6 +106,86 @@ def _classify_drop_reactions(msg):
         else:
             wildcards.append(emoji)
     return numeric, wildcards
+
+
+async def _react_to_drop_choice(app, channel, drop_msg, reaction_idx, summary_text):
+    if reaction_idx >= len(DROP_NUMBER_EMOJIS):
+        app.ui_log(f"⚠ Unsupported drop card index {reaction_idx + 1} — cannot react")
+        return False
+
+    try:
+        drop_msg = await channel.fetch_message(drop_msg.id)
+    except Exception as exc:
+        app.ui_log(f"   ⚠ Could not refresh drop message for reactions: {exc}")
+
+    _, wildcard_emojis = _classify_drop_reactions(drop_msg)
+    seen_wildcards = set()
+    for wildcard_emoji in wildcard_emojis:
+        wildcard_key = str(wildcard_emoji)
+        if wildcard_key in seen_wildcards:
+            continue
+        seen_wildcards.add(wildcard_key)
+        app.ui_log(f"✨ Pressing wildcard reaction first: {wildcard_emoji}")
+        await drop_msg.add_reaction(wildcard_emoji)
+
+    app.ui_log(summary_text)
+    await drop_msg.add_reaction(DROP_NUMBER_EMOJIS[reaction_idx])
+    return True
+
+
+async def _blind_grab_drop(app, channel, drop_msg):
+    return await _react_to_drop_choice(
+        app,
+        channel,
+        drop_msg,
+        0,
+        "⚠ OCR retry window exhausted near grab timeout — blind-grabbing card 1",
+    )
+
+
+async def _parse_drop_cards_with_retry(app, drop_msg, drop_started_monotonic):
+    embed_card_count = max((len(embed.fields) for embed in drop_msg.embeds), default=0)
+    if embed_card_count > 3:
+        app.ui_log(f"📋 Detected {embed_card_count} drop entries — using embed parsing instead of 3-card OCR")
+        return parse_drop_embed(app, drop_msg)
+
+    if not drop_msg.attachments:
+        return parse_drop_embed(app, drop_msg)
+
+    from ocr import check_easyocr, parse_drop_image, release_reader
+
+    ok, message = check_easyocr()
+    if not ok:
+        app.ui_log(f"⚠ {message} Falling back to embed parsing.")
+        return parse_drop_embed(app, drop_msg)
+
+    attempt = 1
+    deadline = drop_started_monotonic + DROP_GRAB_CUTOFF_SECS
+
+    while time.monotonic() < deadline:
+        try:
+            cards = parse_drop_image(drop_msg.attachments[0].url, log_fn=app.ui_log)
+            if cards:
+                return cards
+            app.ui_log(f"⚠ OCR attempt {attempt} returned no cards")
+        except Exception as exc:
+            app.ui_log(f"⚠ OCR attempt {attempt} failed: {exc}")
+
+        try:
+            release_reader()
+        except Exception:
+            pass
+
+        time_left = deadline - time.monotonic()
+        if time_left <= DROP_OCR_RETRY_DELAY_SECS:
+            break
+
+        attempt += 1
+        app.ui_log(f"   ↻ Retrying OCR (attempt {attempt})...")
+        await asyncio.sleep(min(DROP_OCR_RETRY_DELAY_SECS, max(0.5, time_left - 1)))
+
+    app.ui_log("⚠ OCR retry window exhausted — trying embed parsing")
+    return parse_drop_embed(app, drop_msg)
 
 
 # ─────────────────────────────────────────────
@@ -571,6 +654,7 @@ async def do_drop(app, client, channel):
         return
 
     try:
+        drop_started_monotonic = time.monotonic()
         msg_sent = await send_safe(channel, "k!drop", app)
         if not msg_sent:
             return
@@ -583,25 +667,15 @@ async def do_drop(app, client, channel):
             app.ui_log("⚠ No drop message detected.")
             return
 
-        embed_card_count = max((len(embed.fields) for embed in drop_msg.embeds), default=0)
+        # OCR parse with bounded retry window, then embed fallback.
+        cards = await _parse_drop_cards_with_retry(app, drop_msg, drop_started_monotonic)
 
-        # OCR parse
-        cards = None
-        if drop_msg.attachments and embed_card_count <= 3:
-            from ocr import parse_drop_image, check_easyocr
-            ok, _ = check_easyocr()
-            if ok:
-                cards = parse_drop_image(
-                    drop_msg.attachments[0].url,
-                    log_fn=app.ui_log,
-                )
-        elif embed_card_count > 3:
-            app.ui_log(f"📋 Detected {embed_card_count} drop entries — using embed parsing instead of 3-card OCR")
-
+        grab_enabled = getattr(app, "macro_grab", None)
+        grab_enabled = grab_enabled.get() if grab_enabled else True
         if not cards:
-            cards = parse_drop_embed(app, drop_msg)
-        if not cards:
-            app.ui_log("⚠ Couldn't parse cards.")
+            app.ui_log("⚠ Couldn't parse cards after OCR retries and embed fallback.")
+            if grab_enabled:
+                await _blind_grab_drop(app, channel, drop_msg)
             return
 
         app.ui_log("📋 Cards: " + ", ".join(
@@ -611,46 +685,33 @@ async def do_drop(app, client, channel):
         for card in cards:
             if card["print"] < 100:
                 continue
+            time_left = (drop_started_monotonic + DROP_GRAB_CUTOFF_SECS) - time.monotonic()
+            if time_left <= DROP_MIN_LOOKUP_TIME_LEFT_SECS:
+                app.ui_log(
+                    f"⚠ Near grab timeout ({max(0, int(time_left))}s left) — "
+                    "skipping remaining wishlist lookups"
+                )
+                break
             app.ui_log(f"🔎 Looking up: {card['name']!r} (series: {card.get('series') or 'unknown'})")
             result = await lookup_wishes(app, client, channel, card["name"], card.get("series"))
             card["wishes"] = result  # None = lookup failed, 0 = found with 0 wishes
 
         # Pick + grab
-        grab_enabled = getattr(app, "macro_grab", None)
-        grab_enabled = grab_enabled.get() if grab_enabled else True
-
         if not grab_enabled:
             app.ui_log("⏭ Grab macro disabled — skipping card grab")
         else:
             best_idx = pick_best_card(app, cards)
             best     = cards[best_idx]
             reaction_idx = best.get("index", best_idx)
-            if reaction_idx >= len(DROP_NUMBER_EMOJIS):
-                app.ui_log(f"⚠ Unsupported drop card index {reaction_idx + 1} — cannot react")
-                return
-            emoji = DROP_NUMBER_EMOJIS[reaction_idx]
-
-            # Re-fetch the message so we can see any wildcard / event reactions
-            # Karuta attached after the initial message event.
-            try:
-                drop_msg = await channel.fetch_message(drop_msg.id)
-            except Exception as exc:
-                app.ui_log(f"   ⚠ Could not refresh drop message for reactions: {exc}")
-
-            _, wildcard_emojis = _classify_drop_reactions(drop_msg)
-            seen_wildcards = set()
-            for wildcard_emoji in wildcard_emojis:
-                wildcard_key = str(wildcard_emoji)
-                if wildcard_key in seen_wildcards:
-                    continue
-                seen_wildcards.add(wildcard_key)
-                app.ui_log(f"✨ Pressing wildcard reaction first: {wildcard_emoji}")
-                await drop_msg.add_reaction(wildcard_emoji)
-
-            app.ui_log(
+            if not await _react_to_drop_choice(
+                app,
+                channel,
+                drop_msg,
+                reaction_idx,
                 f"⭐ Grabbing card {reaction_idx+1}: {best['name']} "
-                f"(print: #{best['print']}, wishes: {best['wishes']})")
-            await drop_msg.add_reaction(emoji)
+                f"(print: #{best['print']}, wishes: {best['wishes']})",
+            ):
+                return
 
             # Check burn eligibility
             await asyncio.sleep(3)
