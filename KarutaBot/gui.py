@@ -524,7 +524,7 @@ class AccountPanel:
         try:
             import tkinter.font as tkfont
             return name in tkfont.families()
-        except:
+        except Exception:
             return False
 
     def _update_badge(self, name, var):
@@ -1355,9 +1355,7 @@ class KarutaApp:
             return
 
         for panel in list(self.panels):
-            if getattr(panel, "running", False):
-                panel.running = False
-            panel.outer.destroy()
+            self._dispose_panel(panel)
         self.panels.clear()
 
         for acc in accounts:
@@ -1400,13 +1398,22 @@ class KarutaApp:
         self.save_all()
         self.canvas.after(100, lambda: self.canvas.yview_moveto(1.0))
 
+    def _dispose_panel(self, panel):
+        if getattr(panel, "running", False):
+            panel.stop_bot()
+        elif getattr(panel, "client", None) and getattr(panel, "loop", None):
+            import asyncio
+            try:
+                asyncio.run_coroutine_threadsafe(panel.client.close(), panel.loop)
+            except Exception:
+                pass
+        panel.outer.destroy()
+
     def remove_account(self, index):
         if len(self.panels) <= 1:
             return
         panel = self.panels[index]
-        if panel.running:
-            panel.stop_bot()
-        panel.outer.destroy()
+        self._dispose_panel(panel)
         self.panels.pop(index)
         for i, p in enumerate(self.panels):
             p.index = i
