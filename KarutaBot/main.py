@@ -69,7 +69,14 @@ def launch():
     app  = KarutaApp(root, features=features)
 
     if LICENSED_MODE:
-        root.protocol("WM_DELETE_WINDOW", lambda: [release_key(key), root.destroy()])
+        def _on_close():
+            try:
+                release_key(key)
+            except Exception:
+                pass
+            root.destroy()
+
+        root.protocol("WM_DELETE_WINDOW", _on_close)
     else:
         root.protocol("WM_DELETE_WINDOW", root.destroy)
 
