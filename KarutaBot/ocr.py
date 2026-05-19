@@ -7,6 +7,7 @@ No separate program installation required.
 
 import re
 import os
+import threading
 import requests
 from io import BytesIO
 from PIL import Image
@@ -24,6 +25,7 @@ DEBUG_DIR   = "ocr_debug"
 
 # ── EasyOCR reader (loaded once, reused) ──────────────────────────────────────
 _reader = None
+_reader_lock = threading.RLock()
 
 
 def release_reader():
@@ -31,17 +33,18 @@ def release_reader():
     The reader reloads automatically on the next drop.
     """
     global _reader
-    if _reader is None:
-        return
-    try:
-        if hasattr(_reader, 'detector'):
-            del _reader.detector
-        if hasattr(_reader, 'recognizer'):
-            del _reader.recognizer
-    except Exception:
-        pass
-    del _reader
-    _reader = None
+    with _reader_lock:
+        if _reader is None:
+            return
+        try:
+            if hasattr(_reader, 'detector'):
+                del _reader.detector
+            if hasattr(_reader, 'recognizer'):
+                del _reader.recognizer
+        except Exception:
+            pass
+        del _reader
+        _reader = None
     import gc
     gc.collect()
     try:
@@ -54,20 +57,21 @@ def release_reader():
 def _get_reader(log_fn=None):
     """Load EasyOCR reader, downloading model on first use (~100MB, one time)."""
     global _reader
-    if _reader is not None:
+    with _reader_lock:
+        if _reader is not None:
+            return _reader
+        try:
+            import easyocr
+        except ImportError:
+            raise RuntimeError(
+                "EasyOCR not installed. Run: pip install easyocr"
+            )
+        if log_fn:
+            log_fn("Loading OCR model (first run may take a moment)...")
+        _reader = easyocr.Reader(["en"], verbose=False)
+        if log_fn:
+            log_fn("OCR model loaded.")
         return _reader
-    try:
-        import easyocr
-    except ImportError:
-        raise RuntimeError(
-            "EasyOCR not installed. Run: pip install easyocr"
-        )
-    if log_fn:
-        log_fn("Loading OCR model (first run may take a moment)...")
-    _reader = easyocr.Reader(["en"], verbose=False)
-    if log_fn:
-        log_fn("OCR model loaded.")
-    return _reader
 
 
 def check_easyocr():
@@ -174,12 +178,6 @@ def parse_drop_image(image_url, log_fn=None):
             log_fn(msg)
 
     try:
-        reader = _get_reader(log_fn=log_fn)
-    except Exception as e:
-        log(f"OCR setup error: {e}")
-        return None
-
-    try:
         response = requests.get(image_url, timeout=10)
         response.raise_for_status()
         img = Image.open(BytesIO(response.content)).convert("RGB")
@@ -196,46 +194,53 @@ def parse_drop_image(image_url, log_fn=None):
     card_width = width // 3
     cards = []
 
-    for i in range(3):
-        x_start  = i * card_width
-        card_img = img.crop((x_start, 0, x_start + card_width, height))
+    try:
+        with _reader_lock:
+            reader = _get_reader(log_fn=log_fn)
 
-        name_crop   = card_img.crop((0, int(height * NAME_TOP),    card_width, int(height * NAME_BOTTOM)))
-        series_crop = card_img.crop((0, int(height * SERIES_TOP),  card_width, int(height * SERIES_BOTTOM)))
-        print_crop  = card_img.crop((0, int(height * PRINT_TOP),   card_width, int(height * PRINT_BOTTOM)))
+            for i in range(3):
+                x_start  = i * card_width
+                card_img = img.crop((x_start, 0, x_start + card_width, height))
 
-        if DEBUG_CROPS:
-            name_crop.save(os.path.join(DEBUG_DIR,   f"card{i+1}_name.png"))
-            series_crop.save(os.path.join(DEBUG_DIR, f"card{i+1}_series.png"))
-            print_crop.save(os.path.join(DEBUG_DIR,  f"card{i+1}_print.png"))
+                name_crop   = card_img.crop((0, int(height * NAME_TOP),    card_width, int(height * NAME_BOTTOM)))
+                series_crop = card_img.crop((0, int(height * SERIES_TOP),  card_width, int(height * SERIES_BOTTOM)))
+                print_crop  = card_img.crop((0, int(height * PRINT_TOP),   card_width, int(height * PRINT_BOTTOM)))
 
-        name_crop   = _preprocess(name_crop)
-        series_crop = _preprocess(series_crop)
-        print_crop  = _preprocess_print(print_crop)
+                if DEBUG_CROPS:
+                    name_crop.save(os.path.join(DEBUG_DIR,   f"card{i+1}_name.png"))
+                    series_crop.save(os.path.join(DEBUG_DIR, f"card{i+1}_series.png"))
+                    print_crop.save(os.path.join(DEBUG_DIR,  f"card{i+1}_print.png"))
 
-        if DEBUG_CROPS:
-            name_crop.save(os.path.join(DEBUG_DIR,   f"card{i+1}_name_processed.png"))
-            series_crop.save(os.path.join(DEBUG_DIR, f"card{i+1}_series_processed.png"))
-            print_crop.save(os.path.join(DEBUG_DIR,  f"card{i+1}_print_processed.png"))
+                name_crop   = _preprocess(name_crop)
+                series_crop = _preprocess(series_crop)
+                print_crop  = _preprocess_print(print_crop)
 
-        raw_name   = _ocr_text(reader, name_crop)
-        raw_series = _ocr_text(reader, series_crop)
-        raw_print  = _ocr_print(reader, print_crop)
+                if DEBUG_CROPS:
+                    name_crop.save(os.path.join(DEBUG_DIR,   f"card{i+1}_name_processed.png"))
+                    series_crop.save(os.path.join(DEBUG_DIR, f"card{i+1}_series_processed.png"))
+                    print_crop.save(os.path.join(DEBUG_DIR,  f"card{i+1}_print_processed.png"))
 
-        log(f"Card {i+1} raw — name: {raw_name!r}  series: {raw_series!r}  print: {raw_print!r}")
+                raw_name   = _ocr_text(reader, name_crop)
+                raw_series = _ocr_text(reader, series_crop)
+                raw_print  = _ocr_print(reader, print_crop)
 
-        name      = _clean_name(raw_name)
-        series    = _clean_name(raw_series)
-        print_num = _clean_print(raw_print)
+                log(f"Card {i+1} raw — name: {raw_name!r}  series: {raw_series!r}  print: {raw_print!r}")
 
-        log(f"   -> name: {name!r}  series: {series!r}  print: #{print_num}")
+                name      = _clean_name(raw_name)
+                series    = _clean_name(raw_series)
+                print_num = _clean_print(raw_print)
 
-        cards.append({
-            "name":   name if name else f"Card {i+1}",
-            "series": series,
-            "print":  print_num,
-            "wishes": 0,
-            "index":  i,
-        })
+                log(f"   -> name: {name!r}  series: {series!r}  print: #{print_num}")
+
+                cards.append({
+                    "name":   name if name else f"Card {i+1}",
+                    "series": series,
+                    "print":  print_num,
+                    "wishes": 0,
+                    "index":  i,
+                })
+    except Exception as e:
+        log(f"OCR parse error: {e}")
+        return None
 
     return cards
