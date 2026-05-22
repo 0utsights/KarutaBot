@@ -4,11 +4,9 @@ pyinstaller ^
   --noconsole ^
   --name "Aeyori" ^
   --icon=icon.ico ^
-  --exclude-module easyocr ^
-  --exclude-module torch ^
-  --exclude-module torchvision ^
-  --exclude-module cv2 ^
-  --exclude-module numpy ^
+  --collect-all easyocr ^
+  --collect-all torch ^
+  --collect-all torchvision ^
   launcher.py
 echo.
 echo Build complete. Check dist\Aeyori.exe
