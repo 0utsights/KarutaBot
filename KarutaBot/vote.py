@@ -168,14 +168,12 @@ def _navigate_to_vote(driver):
 
     Flow:
       1. Go to top.gg vote page
-      2. Wait for any redirects (OAuth, login, etc.)
-      3. If we end up on Discord OAuth → click Authorize
+      2. Handle top.gg's login-required page if shown
+      3. Handle top.gg's /auth/login provider chooser if shown
       4. If we end up on Discord login → wait for auto-login from token
-      5. Once back on top.gg → check for login button, click if needed
-      6. Ensure we're on the vote page
+      5. If we end up on Discord OAuth → click Authorize
+      6. Return only once we're back on the vote page
     """
-    from selenium.webdriver.common.by import By
-
     log.info(f"Navigating to vote page: {VOTE_URL}")
     try:
         driver.get(VOTE_URL)
@@ -184,10 +182,10 @@ def _navigate_to_vote(driver):
         log.info(f"Page load timeout (non-fatal, continuing): {_e}")
     time.sleep(PAGE_LOAD_WAIT)
 
-    # ── Handle redirects — top.gg may bounce us through Discord OAuth ──
-    # We may need multiple passes since it can chain:
-    #   top.gg → discord login → discord oauth → top.gg
-    for attempt in range(3):
+    # top.gg now inserts an auth-provider chooser:
+    #   vote page → top.gg auth/login → Discord login → Discord OAuth → vote page
+    # Give the flow several passes so each redirect can settle.
+    for attempt in range(6):
         current = driver.current_url
         log.info(f"[attempt {attempt+1}] URL: {current}")
 
@@ -202,33 +200,54 @@ def _navigate_to_vote(driver):
             time.sleep(OAUTH_FLOW_WAIT)
             continue
 
-        if "top.gg" in current:
-            # We're on top.gg — check if there's a visible login button
-            # that we need to click (meaning we're not logged in yet)
+        if "top.gg/auth/login" in current:
             login_needed = _try_click_login_if_needed(driver)
             if login_needed == "clicked":
-                log.info("Clicked login on top.gg — waiting for OAuth redirect...")
-                time.sleep(OAUTH_FLOW_WAIT)
-                continue  # will loop back to handle OAuth
-            elif login_needed == "logged_in":
-                log.info("Already logged into top.gg ✓")
-                break
+                log.info("Clicked Discord login on top.gg — waiting for Discord redirect...")
+                time.sleep(PAGE_LOAD_WAIT)
             else:
-                # Ambiguous — just proceed, the vote button check will tell us
-                log.info("Login status unclear — proceeding to vote button")
-                break
+                log.info("top.gg auth page still visible — waiting for provider buttons / redirect...")
+                time.sleep(4)
+            continue
 
-    # ── Make sure we're on the vote page ──
-    current = driver.current_url
-    if "top.gg" in current:
-        if "/vote" not in current:
+        if "top.gg" in current:
+            login_needed = _try_click_login_if_needed(driver)
+            if login_needed == "clicked":
+                log.info("Clicked login on top.gg — waiting for auth redirect...")
+                time.sleep(PAGE_LOAD_WAIT)
+                continue
+            if login_needed == "needs_login":
+                log.info("top.gg still shows login-required state — retrying...")
+                time.sleep(4)
+                continue
+            if "/vote" in current:
+                log.info(f"On vote page: {current}")
+                return True
+
             log.info("On top.gg but not vote page — navigating...")
             driver.get(VOTE_URL)
             time.sleep(PAGE_LOAD_WAIT)
-        log.info(f"On vote page: {driver.current_url}")
+            continue
+
+        log.info("Unexpected page during vote flow — waiting briefly...")
+        time.sleep(3)
+
+    # ── Make sure we're on the vote page ──
+    current = driver.current_url
+    if "top.gg" in current and "/vote" in current:
+        log.info(f"On vote page: {current}")
         return True
 
-    log.warning(f"Unexpected URL after login flow: {current}")
+    if "top.gg" in current:
+        log.info("On top.gg but not vote page — navigating...")
+        driver.get(VOTE_URL)
+        time.sleep(PAGE_LOAD_WAIT)
+        final_url = driver.current_url
+        if "top.gg" in final_url and "/vote" in final_url:
+            log.info(f"On vote page: {final_url}")
+            return True
+
+    log.warning(f"Unexpected URL after login flow: {driver.current_url}")
     return False
 
 
@@ -236,67 +255,150 @@ def _try_click_login_if_needed(driver):
     """Check if top.gg shows a login button and click it if so.
 
     Returns:
-        'clicked'    — found and clicked a login button
-        'logged_in'  — no login button found, appears logged in
-        'unknown'    — can't tell
+        'clicked'      — found and clicked a login button
+        'needs_login'  — top.gg is still showing a login-required page
+        'logged_in'    — no login UI found, appears logged in
+        'unknown'      — can't tell
     """
     try:
         result = driver.execute_script("""
-            // Search for visible login/sign-in buttons or links
-            let loginEls = [];
-            let all = document.querySelectorAll('a, button, [role="button"]');
-            for (let el of all) {
-                let text = (el.textContent || '').trim().toLowerCase();
-                let href = (el.getAttribute('href') || '').toLowerCase();
+            function norm(text) {
+                return (text || '').trim().toLowerCase().replace(/\\s+/g, ' ');
+            }
+
+            const loginPhrases = new Set([
+                'login', 'log in', 'sign in',
+                'login to vote', 'log in to vote', 'sign in to vote',
+                'login with discord', 'log in with discord',
+                'sign in with discord', 'continue with discord'
+            ]);
+            const bodyText = norm(document.body ? document.body.innerText : '');
+            const path = (location.pathname || '').toLowerCase();
+            const onAuthPage = path.startsWith('/auth/login');
+            let candidates = [];
+
+            for (let el of document.querySelectorAll('a, button, [role="button"]')) {
                 let r = el.getBoundingClientRect();
                 if (r.height < 5 || r.width < 5) continue;
-                if (getComputedStyle(el).display === 'none') continue;
 
-                // Only match elements whose DIRECT text is login-related
-                // (avoid matching large containers that happen to contain
-                //  the word "login" somewhere deep in their children)
+                let style = getComputedStyle(el);
+                if (style.display === 'none' || style.visibility === 'hidden') continue;
+
+                let text = norm(el.textContent);
+                let href = norm(el.getAttribute('href'));
+
                 let directText = '';
                 for (let n of el.childNodes) {
                     if (n.nodeType === 3) directText += n.textContent;
                 }
-                directText = directText.trim().toLowerCase();
+                directText = norm(directText);
 
-                let isLogin = false;
-                if (directText === 'login' || directText === 'log in'
-                    || directText === 'sign in'
-                    || directText === 'login to vote'
-                    || directText === 'log in to vote'
-                    || directText === 'sign in to vote') {
+                let isLogin = loginPhrases.has(directText) || loginPhrases.has(text);
+                if (!isLogin && text.includes('discord')) {
+                    isLogin = (
+                        text.includes('login') || text.includes('log in')
+                        || text.includes('sign in') || text.includes('continue')
+                    );
+                }
+                if (!isLogin && (
+                    href.includes('/auth/login')
+                    || href.includes('/api/auth/discord')
+                    || href.includes('discord.com/login')
+                    || href.includes('oauth2/authorize')
+                ) && text.length < 60) {
                     isLogin = true;
                 }
-                // href-based: only if it's a small nav element, not the whole page
-                if ((href.includes('/login') || href === '/api/auth/discord')
-                    && text.length < 30) {
-                    isLogin = true;
+
+                if (!isLogin) continue;
+
+                let score = 0;
+                if (loginPhrases.has(text) || loginPhrases.has(directText)) score += 20;
+                if (text.includes('discord') || href.includes('discord')) score += 60;
+                if (text.includes('vote')) score += 20;
+                if (href.includes('/auth/login')) score += 35;
+                if (
+                    href.includes('/api/auth/discord')
+                    || href.includes('discord.com/login')
+                    || href.includes('oauth2/authorize')
+                ) score += 50;
+                if (r.width > 250) score += 10;
+                if (el.tagName === 'BUTTON') score += 3;
+                if (el.tagName === 'A') score += 2;
+
+                // Generic header/login buttons are weaker matches than the
+                // provider chooser or the vote card CTA.
+                if (text === 'login' || directText === 'login') score -= 10;
+                if (onAuthPage && !text.includes('discord') && !href.includes('discord')) {
+                    score -= 30;
                 }
 
-                if (isLogin) {
-                    loginEls.push({
-                        tag: el.tagName, text: directText.substring(0, 40),
-                        href: href.substring(0, 60), h: r.height, w: r.width
+                candidates.push({
+                    score: score,
+                    tag: el.tagName,
+                    text: (text || directText).substring(0, 60),
+                    href: href.substring(0, 80),
+                    x: r.x + (r.width / 2),
+                    y: r.y + (r.height / 2)
+                });
+            }
+
+            if (candidates.length > 0) {
+                candidates.sort((a, b) => b.score - a.score);
+                let best = candidates[0];
+                let target = document.elementFromPoint(best.x, best.y);
+                if (!target) {
+                    target = [...document.querySelectorAll('a, button, [role="button"]')].find(el => {
+                        let txt = norm(el.textContent);
+                        let href = norm(el.getAttribute('href'));
+                        return txt === best.text || href === best.href;
                     });
-                    // Click the first clear login button
-                    el.scrollIntoView({block: 'center'});
-                    el.click();
-                    return JSON.stringify({action: 'clicked',
-                        tag: el.tagName, text: directText.substring(0, 40)});
+                }
+                if (target) {
+                    target.scrollIntoView({block: 'center'});
+                    target.click();
+                    return JSON.stringify({
+                        action: 'clicked',
+                        tag: best.tag,
+                        text: best.text,
+                        href: best.href,
+                        score: best.score
+                    });
                 }
             }
+
+            if (
+                onAuthPage
+                || bodyText.includes('you must be logged in to vote')
+                || bodyText.includes('choose a login method')
+                || bodyText.includes('log in to your top.gg account')
+            ) {
+                return JSON.stringify({
+                    action: 'needs_login',
+                    path: path,
+                    body: bodyText.substring(0, 120)
+                });
+            }
+
             return JSON.stringify({action: 'no_login_found'});
         """)
 
         import json
         data = json.loads(result)
         if data["action"] == "clicked":
-            log.info(f"Clicked login: <{data['tag']}> text={data['text']!r}")
+            log.info(
+                f"Clicked login: <{data['tag']}> text={data['text']!r} "
+                f"href={data.get('href', '')!r} score={data.get('score', '?')}"
+            )
             return "clicked"
-        else:
+        if data["action"] == "needs_login":
+            log.info(
+                f"top.gg still needs login (path={data.get('path', '')!r}) "
+                f"text={data.get('body', '')!r}"
+            )
+            return "needs_login"
+        if data["action"] == "no_login_found":
             return "logged_in"
+        return "unknown"
 
     except Exception as exc:
         log.warning(f"Login check error: {exc}")
