@@ -5,6 +5,8 @@ import os
 import multiprocessing
 multiprocessing.freeze_support()
 
+IS_FROZEN = getattr(sys, "frozen", False)
+
 # ─────────────────────────────────────────────────────────
 #  This is the ENTRY POINT that PyInstaller compiles.
 #  It checks/installs dependencies silently, shows a
@@ -32,6 +34,15 @@ def check_and_install():
     return needed
 
 def install_package(pip_name, log_callback):
+    if IS_FROZEN:
+        log_callback(
+            "❌ Packaged build is missing required modules and cannot self-install them."
+        )
+        log_callback(
+            "   Rebuild the EXE with bundled OCR dependencies instead of excluding them."
+        )
+        return False
+
     log_callback(f"Installing {pip_name}...")
     result = subprocess.run(
         [sys.executable, "-m", "pip", "install", pip_name, "--quiet"],
@@ -160,7 +171,18 @@ def main():
             screen.set_log(f"Installing {pip_name}...")
             ok = install_package(pip_name, screen.set_log)
             if not ok:
-                screen.show_error(f"Could not install '{pip_name}'.\nPlease check your internet connection and try again.")
+                if IS_FROZEN:
+                    missing = ", ".join(name for _, name in needed)
+                    screen.show_error(
+                        "This EXE was built without required modules.\n"
+                        f"Missing: {missing}\n\n"
+                        "Use a build that bundles OCR dependencies."
+                    )
+                else:
+                    screen.show_error(
+                        f"Could not install '{pip_name}'.\n"
+                        "Please check your internet connection and try again."
+                    )
                 return
             current += step
             screen.set_progress(int(current))
