@@ -495,7 +495,7 @@ async def automation_loop(app, client, channel_id):
 async def do_vote(app, client, channel):
     """Handle vote automation based on vote_mode setting.
 
-    auto — Full headless pipeline via vote.py (zero interaction).
+    auto — Browser pipeline via vote.py; stops for interactive verification.
     semi — Sends k!vote and opens the top.gg page for the user to click.
     off  — Handled upstream in automation_loop (never calls this).
     """
@@ -509,7 +509,7 @@ async def do_vote(app, client, channel):
 
 
 async def _do_vote_auto(app, client, channel):
-    """Fully automatic vote — headless browser, zero user interaction."""
+    """Run the browser vote flow until manual interaction is required."""
     # Check if user wants visible browser for debugging
     show_browser = getattr(app, "show_browser_var", None)
     show_browser = show_browser.get() if show_browser else False
@@ -530,8 +530,8 @@ async def _do_vote_auto(app, client, channel):
     try:
         from vote import auto_vote
     except ImportError:
-        app.ui_log("❌ [Auto] vote.py not found or undetected-chromedriver not installed")
-        app.ui_log("   Run: pip install undetected-chromedriver selenium")
+        app.ui_log("❌ [Auto] vote.py or Selenium is unavailable")
+        app.ui_log("   Run: pip install selenium")
         return
 
     try:

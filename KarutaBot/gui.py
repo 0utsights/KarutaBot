@@ -1130,7 +1130,8 @@ class KarutaApp:
             _btn(tr, "+ Add Account", self.add_account, C["accent"], small=True).pack(side="left", padx=4)
         _btn(tr, "📂 Import",     self.import_config, C["card2"], small=True).pack(side="left", padx=4)
         _btn(tr, "💾 Export",     self.export_config, C["card2"], small=True).pack(side="left", padx=4)
-        _btn(tr, "❓ Token Help",  self.show_token_help, C["card2"], small=True).pack(side="left", padx=4)
+        _btn(tr, "⚠ Credential Safety", self.show_credential_safety,
+             C["card2"], small=True).pack(side="left", padx=4)
 
         tk.Frame(self.root, bg=C["accent"], height=1).pack(fill="x")
 
@@ -1433,53 +1434,46 @@ class KarutaApp:
             self.panels[0].ui_set_status(text, online)
 
     # ─────────────────────────────────────────
-    #  Token help dialog
+    #  Credential safety dialog
     # ─────────────────────────────────────────
-    def show_token_help(self):
+    def show_credential_safety(self):
         win = tk.Toplevel(self.root)
-        win.title("Getting Your Discord Token")
-        win.geometry("480x440")
+        win.title("Credential Safety")
+        win.geometry("520x360")
         win.resizable(False, False)
         win.configure(bg=C["bg"])
         win.grab_set()
 
-        tk.Frame(win, bg=C["accent"], height=2).pack(fill="x")
+        tk.Frame(win, bg=C["red"], height=2).pack(fill="x")
 
-        tk.Label(win, text="Getting Your Discord Token",
+        tk.Label(win, text="Protect Your Discord Credential",
                  font=("Segoe UI", 13, "bold"),
-                 bg=C["bg"], fg=C["text"]).pack(pady=(20, 4))
-        tk.Label(win, text="Follow these steps carefully:",
-                 font=("Segoe UI", 9), bg=C["bg"], fg=C["muted"]).pack()
+                 bg=C["bg"], fg=C["text"]).pack(pady=(24, 8))
 
-        steps_outer = tk.Frame(win, bg=C["border"])
-        steps_outer.pack(fill="x", padx=20, pady=12)
-        steps_inner = tk.Frame(steps_outer, bg=C["card2"])
-        steps_inner.pack(fill="both", padx=1, pady=1)
+        message = (
+            "A Discord user token grants access comparable to a password. "
+            "Aeyori does not provide instructions for extracting one, and support "
+            "will never ask you to send it.\n\n"
+            "Discord prohibits self-bots and user-account automation. Using Aeyori "
+            "can result in restrictions or a permanent ban. There is no undetectable "
+            "mode or account-safety guarantee.\n\n"
+            "Keep credentials only in your local configuration, remove them from "
+            "exports and screenshots, and rotate them immediately if exposed."
+        )
+        tk.Label(win, text=message, wraplength=450, justify="left",
+                 font=("Segoe UI", 9), bg=C["card2"], fg=C["text"],
+                 padx=18, pady=18).pack(fill="x", padx=24, pady=12)
 
-        steps = [
-            ("1", "Click the button below to open Discord in your browser"),
-            ("2", "Log into your Discord account if needed"),
-            ("3", "Press F12 to open DevTools"),
-            ("4", "Click the 'Network' tab"),
-            ("5", "Press Ctrl+R to reload the page"),
-            ("6", "In the filter box, type:  api"),
-            ("7", "Click any request that appears in the list"),
-            ("8", "Under 'Headers', find the 'authorization' field"),
-            ("9", "Copy that value — paste it into the Token box"),
-        ]
-        for num, desc in steps:
-            row = tk.Frame(steps_inner, bg=C["card2"])
-            row.pack(fill="x", padx=12, pady=3)
-            tk.Label(row, text=num, font=("Segoe UI", 8, "bold"),
-                     bg=C["accent"], fg=C["dark"],
-                     width=2, padx=4, pady=1).pack(side="left", padx=(0, 10))
-            tk.Label(row, text=desc, font=("Segoe UI", 9),
-                     bg=C["card2"], fg=C["text"], anchor="w").pack(side="left")
+        _btn(
+            win,
+            "Read Discord Self-Bot Guidance",
+            lambda: webbrowser.open(
+                "https://support.discord.com/hc/en-us/articles/"
+                "115002192352-Automated-User-Accounts-Self-Bots"
+            ),
+            C["accent"],
+        ).pack(pady=(4, 8))
 
-        _btn(win, "Open Discord in Browser",
-             lambda: webbrowser.open("https://discord.com/app"),
-             C["accent"]).pack(pady=(8, 4))
-
-        tk.Label(win, text="⚠  Never share your token with anyone.",
+        tk.Label(win, text="Never paste credentials into issues, email, or chat.",
                  font=("Segoe UI", 9, "bold"),
-                 bg=C["bg"], fg=C["red"]).pack(pady=(4, 16))
+                 bg=C["bg"], fg=C["red"]).pack(pady=(2, 12))

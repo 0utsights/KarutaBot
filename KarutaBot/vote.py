@@ -1,8 +1,8 @@
 """
 vote.py — Automatic top.gg vote pipeline
 
-Handles the full browser-based vote flow with zero user interaction:
-  1. Launch an isolated browser session (which services may identify as automated)
+Handles a browser-based vote flow until user interaction is required:
+  1. Launch a standard Selenium browser session
   2. Navigate to discord.com/login → inject Discord token into localStorage
   3. Navigate to top.gg vote page → Discord OAuth auto-approves
   4. Click the vote button
@@ -10,7 +10,7 @@ Handles the full browser-based vote flow with zero user interaction:
   6. Verify success → close browser
 
 Dependencies:
-  pip install undetected-chromedriver selenium
+  pip install selenium
 
 Notes:
   - Chrome/Chromium must be installed on the user's system.
@@ -33,28 +33,24 @@ PAGE_LOAD_WAIT   = 12      # seconds to wait for pages to load
 TOKEN_INJECT_WAIT = 4     # seconds after token inject before reload
 OAUTH_FLOW_WAIT  = 18     # seconds for Discord→top.gg OAuth redirect chain
 VOTE_BTN_WAIT    = 45     # seconds to poll for vote button (includes ad wait)
-CAPTCHA_WAIT     = 8      # seconds to wait for captcha to resolve after click
 SUCCESS_WAIT     = 6      # seconds to check for success confirmation
 
 
 def _create_driver(headless=True):
-    """Create an undetected-chromedriver instance.
+    """Create a standard Selenium Chrome instance.
 
     Returns the driver, or raises ImportError / RuntimeError if Chrome
-    or the undetected-chromedriver package is unavailable.
+    or Selenium's Chrome driver is unavailable.
     """
-    import undetected_chromedriver as uc
+    from selenium import webdriver
 
-    options = uc.ChromeOptions()
+    options = webdriver.ChromeOptions()
     if headless:
         options.add_argument("--headless=new")
     options.add_argument("--no-sandbox")
     options.add_argument("--disable-dev-shm-usage")
     options.add_argument("--disable-gpu")
     options.add_argument("--window-size=1280,900")
-    # Compatibility flag for browser-driven testing. This is not a safety or
-    # anti-detection guarantee; services may still identify automated use.
-    options.add_argument("--disable-blink-features=AutomationControlled")
     # Suppress noisy Chrome logs
     options.add_argument("--log-level=3")
     options.add_argument("--silent")
@@ -69,51 +65,7 @@ def _create_driver(headless=True):
     # (images re-enable automatically — this just cuts load time)
     options.add_argument("--blink-settings=imagesEnabled=false")
 
-    # Detect installed Chrome version so we download the matching driver.
-    # undetected-chromedriver sometimes guesses wrong (e.g. grabs v146
-    # when v145 is installed), so we read it ourselves.
-    chrome_ver = None
-    try:
-        import subprocess, re as _re
-        # Windows: query registry for Chrome version
-        result = subprocess.run(
-            ['reg', 'query',
-             r'HKEY_CURRENT_USER\Software\Google\Chrome\BLBeacon',
-             '/v', 'version'],
-            capture_output=True, text=True, timeout=5
-        )
-        match = _re.search(r'(\d+)\.', result.stdout)
-        if match:
-            chrome_ver = int(match.group(1))
-            log.info(f"Detected Chrome version: {chrome_ver}")
-    except Exception:
-        pass
-
-    if not chrome_ver:
-        # Fallback: try reading from the Chrome executable directly
-        try:
-            import subprocess, re as _re
-            for path in [
-                r"C:\Program Files\Google\Chrome\Application\chrome.exe",
-                r"C:\Program Files (x86)\Google\Chrome\Application\chrome.exe",
-            ]:
-                result = subprocess.run(
-                    [path, "--version"],
-                    capture_output=True, text=True, timeout=5
-                )
-                match = _re.search(r'(\d+)\.', result.stdout)
-                if match:
-                    chrome_ver = int(match.group(1))
-                    break
-        except Exception:
-            pass
-
-    kwargs = dict(options=options, use_subprocess=True)
-    if chrome_ver:
-        kwargs["version_main"] = chrome_ver
-        log.info(f"Requesting ChromeDriver for Chrome {chrome_ver}")
-
-    driver = uc.Chrome(**kwargs)
+    driver = webdriver.Chrome(options=options)
     driver.set_page_load_timeout(60)
     driver.implicitly_wait(5)
     return driver
@@ -887,245 +839,6 @@ _JS_BRUTE_FORCE_VOTE = """
 """
 
 
-def _handle_captcha(driver):
-    """Handle Cloudflare Turnstile captcha if it appears.
-
-    Top.gg uses Cloudflare Turnstile ("Verify you are human" checkbox).
-    It lives inside an iframe. With undetected-chromedriver, clicking the
-    checkbox usually auto-passes without image challenges.
-
-    Returns True if captcha was handled or wasn't present.
-    """
-    from selenium.webdriver.common.by import By
-    from selenium.webdriver.common.action_chains import ActionChains
-
-    log.info("Checking for captcha...")
-    time.sleep(2)
-
-    # ── Check if captcha is even present ──
-    # Look for "solve the captcha" or "verify you are human" in visible text
-    try:
-        has_captcha = driver.execute_script("""
-            let els = document.querySelectorAll('h1, h2, h3, h4, h5, p, span, div');
-            for (let el of els) {
-                let r = el.getBoundingClientRect();
-                if (r.height < 5) continue;
-                if (getComputedStyle(el).display === 'none') continue;
-                let t = (el.textContent || '').toLowerCase();
-                if (t.includes('solve the captcha') || t.includes('verify you are human')
-                    || t.includes('captcha to continue')) {
-                    return true;
-                }
-            }
-            return false;
-        """)
-        if not has_captcha:
-            log.info("No captcha text found on page — captcha not present (good!)")
-            return True
-    except Exception:
-        pass
-
-    log.info("Captcha detected — looking for Cloudflare Turnstile iframe...")
-
-    # ── Find the Turnstile iframe ──
-    # Cloudflare Turnstile uses an iframe with src containing "challenges.cloudflare.com"
-    # or with title containing "Cloudflare" or "Turnstile"
-    captcha_frame = None
-    try:
-        iframes = driver.find_elements(By.TAG_NAME, "iframe")
-        log.info(f"Found {len(iframes)} iframes on page")
-        for iframe in iframes:
-            src = iframe.get_attribute("src") or ""
-            title = iframe.get_attribute("title") or ""
-            name = iframe.get_attribute("name") or ""
-            w = iframe.size.get("width", 0)
-            h = iframe.size.get("height", 0)
-            log.info(f"  iframe: src={src[:100]!r} title={title!r} "
-                     f"name={name[:50]!r} size={w}x{h}")
-
-            if ("challenges.cloudflare.com" in src or
-                "turnstile" in src.lower() or
-                "cloudflare" in title.lower() or
-                "turnstile" in title.lower() or
-                "cf-turnstile" in name.lower()):
-                captcha_frame = iframe
-                log.info("  → This is the Turnstile iframe!")
-                break
-
-            # Also check for reCAPTCHA as fallback
-            if "recaptcha" in src.lower() or "recaptcha" in title.lower():
-                captcha_frame = iframe
-                log.info("  → This is a reCAPTCHA iframe!")
-                break
-
-        if not captcha_frame:
-            # Sometimes the iframe doesn't have an obvious src/title.
-            # Look for any small iframe that could be a captcha checkbox
-            for iframe in iframes:
-                w = iframe.size.get("width", 0)
-                h = iframe.size.get("height", 0)
-                if 200 < w < 400 and 50 < h < 100 and iframe.is_displayed():
-                    captcha_frame = iframe
-                    log.info(f"  → Likely captcha iframe by size: {w}x{h}")
-                    break
-
-    except Exception as exc:
-        log.warning(f"Error finding iframes: {exc}")
-
-    if not captcha_frame:
-        log.info("No captcha iframe found — trying direct checkbox click...")
-        # Try clicking the checkbox without iframe switching
-        return _try_direct_captcha_click(driver)
-
-    # ── Click inside the Turnstile iframe ──
-    try:
-        log.info("Switching to captcha iframe...")
-        driver.switch_to.frame(captcha_frame)
-        time.sleep(1)
-
-        # Turnstile has a checkbox/label element inside
-        # Try to find and click it
-        checkbox = None
-
-        # Strategy 1: Find by common Turnstile selectors
-        selectors = [
-            "input[type='checkbox']",
-            "#cf-turnstile-response",
-            "[class*='checkbox']",
-            "label",
-            "[role='checkbox']",
-        ]
-        for sel in selectors:
-            try:
-                elements = driver.find_elements(By.CSS_SELECTOR, sel)
-                for el in elements:
-                    if el.is_displayed():
-                        checkbox = el
-                        log.info(f"Found captcha checkbox via: {sel}")
-                        break
-            except Exception:
-                continue
-            if checkbox:
-                break
-
-        # Strategy 2: Click the body of the iframe (Turnstile often
-        # just needs a click anywhere inside the iframe)
-        if not checkbox:
-            try:
-                body = driver.find_element(By.TAG_NAME, "body")
-                if body:
-                    checkbox = body
-                    log.info("Using iframe body as click target")
-            except Exception:
-                pass
-
-        if checkbox:
-            # Human-like click with slight delay
-            actions = ActionChains(driver)
-            actions.move_to_element(checkbox)
-            actions.pause(0.3 + (time.time() % 1) * 0.3)
-            actions.click()
-            actions.perform()
-            log.info("Clicked captcha checkbox")
-
-        driver.switch_to.default_content()
-
-    except Exception as exc:
-        log.warning(f"Error clicking in captcha iframe: {exc}")
-        try:
-            driver.switch_to.default_content()
-        except Exception:
-            pass
-
-    # ── Wait for captcha to resolve ──
-    log.info("Waiting for captcha to resolve...")
-    time.sleep(CAPTCHA_WAIT)
-
-    # ── Verify captcha was solved ──
-    try:
-        # Check if the captcha text is gone from the visible page
-        still_captcha = driver.execute_script("""
-            let els = document.querySelectorAll('h1, h2, h3, h4, h5, p, span, div');
-            for (let el of els) {
-                let r = el.getBoundingClientRect();
-                if (r.height < 5) continue;
-                if (getComputedStyle(el).display === 'none') continue;
-                let t = (el.textContent || '').toLowerCase();
-                if (t.includes('solve the captcha') || t.includes('verify you are human')
-                    || t.includes('captcha to continue')) {
-                    return true;
-                }
-            }
-            return false;
-        """)
-        if not still_captcha:
-            log.info("Captcha text gone — captcha solved!")
-            return True
-        else:
-            log.warning("Captcha text still present — may not have been solved")
-            return False
-    except Exception:
-        log.info("Could not verify captcha state — proceeding")
-        return True
-
-
-def _try_direct_captcha_click(driver):
-    """Try clicking the captcha checkbox without iframe switching.
-
-    Sometimes Turnstile renders in a shadow DOM or in a way that doesn't
-    require iframe switching. This tries clicking the visible checkbox directly.
-    """
-    from selenium.webdriver.common.by import By
-    from selenium.webdriver.common.action_chains import ActionChains
-
-    try:
-        result = driver.execute_script("""
-            // Look for Turnstile widget container
-            let containers = document.querySelectorAll(
-                '[class*="turnstile" i], [class*="cf-turnstile" i], ' +
-                '[id*="turnstile" i], [data-sitekey]'
-            );
-            for (let c of containers) {
-                let r = c.getBoundingClientRect();
-                if (r.height > 10 && r.width > 10) {
-                    return JSON.stringify({
-                        found: true, x: r.x + r.width/2, y: r.y + r.height/2,
-                        w: r.width, h: r.height,
-                        tag: c.tagName, cls: (c.className || '').substring(0, 60)
-                    });
-                }
-            }
-            return JSON.stringify({found: false});
-        """)
-
-        import json
-        data = json.loads(result)
-        if data.get("found"):
-            log.info(f"Found Turnstile container: {data['tag']} {data['cls']!r} "
-                     f"size={data['w']:.0f}x{data['h']:.0f}")
-
-            # Click in the center of the Turnstile widget
-            el = driver.execute_script(
-                "return document.elementFromPoint(arguments[0], arguments[1]);",
-                data["x"], data["y"]
-            )
-            if el:
-                actions = ActionChains(driver)
-                actions.move_to_element(el)
-                actions.pause(0.4)
-                actions.click()
-                actions.perform()
-                log.info("Clicked Turnstile container")
-
-            time.sleep(CAPTCHA_WAIT)
-            return True
-
-    except Exception as exc:
-        log.warning(f"Direct captcha click failed: {exc}")
-
-    return True  # proceed anyway
-
-
 def _check_success(driver):
     """Check if the vote was successful by looking for confirmation indicators."""
     time.sleep(SUCCESS_WAIT)
@@ -1214,9 +927,8 @@ def _check_success(driver):
 def auto_vote(token, ui_log=None, headless=True):
     """Execute the full automatic vote pipeline with retry.
 
-    If the first attempt fails to confirm success (often due to Cloudflare
-    captcha on first visit), automatically retries once — the captcha cookie
-    persists so the second attempt usually goes through clean.
+    A transient or unconfirmed attempt may retry once. Interactive verification
+    is never retried or completed automatically.
 
     Args:
         token:    Discord user token (the same one used for the bot).
@@ -1234,17 +946,19 @@ def auto_vote(token, ui_log=None, headless=True):
             except Exception:
                 pass
 
-    # Try up to 2 times — first attempt may hit Cloudflare captcha,
-    # second attempt benefits from the captcha cookie
+    # Retry one transient or unconfirmed attempt. A verification challenge
+    # returns immediately instead of entering this retry path.
     for attempt in range(1, 3):
         if attempt > 1:
-            _log("🗳 [Auto] Retrying vote (attempt 2 — captcha cookie should persist)...")
+            _log("🗳 [Auto] Retrying one unconfirmed vote attempt...")
             time.sleep(3)
 
         result = _do_vote_attempt(token, headless, _log, attempt)
 
         if result == "confirmed":
             return True
+        if result == "verification_required":
+            return False
         if result == "likely":
             if attempt == 1:
                 _log("🗳 [Auto] Vote unconfirmed — retrying to verify...")
@@ -1260,7 +974,7 @@ def auto_vote(token, ui_log=None, headless=True):
 
 
 def _do_vote_attempt(token, headless, _log, attempt):
-    """Single vote attempt. Returns 'confirmed', 'likely', or 'failed'."""
+    """Run once and report confirmed, likely, verification_required, or failed."""
     driver = None
     try:
         _log("🗳 [Auto] Launching browser..." + (" (visible)" if not headless else ""))
@@ -1270,7 +984,7 @@ def _do_vote_attempt(token, headless, _log, attempt):
             import sys
             py = sys.executable
             _log(f"❌ [Auto] Import failed: {ie}")
-            _log(f'   Run: & "{py}" -m pip install undetected-chromedriver selenium')
+            _log(f'   Run: & "{py}" -m pip install selenium')
             return "failed"
         except Exception as exc:
             _log(f"❌ [Auto] Could not launch Chrome: {exc}")
@@ -1311,7 +1025,7 @@ def _do_vote_attempt(token, headless, _log, attempt):
         ))
         if challenge_visible:
             _log("⚠ [Auto] Verification required — stopping. Complete this action manually.")
-            return "likely"
+            return "verification_required"
 
         # Step 5: Check for success
         time.sleep(3)
@@ -1334,7 +1048,7 @@ def _do_vote_attempt(token, headless, _log, attempt):
 
 
 def _close_driver(driver, headless, _log):
-    """Safely close the browser and suppress undetected-chromedriver errors."""
+    """Safely close the Selenium browser."""
     if not driver:
         return
     if not headless:
@@ -1345,15 +1059,6 @@ def _close_driver(driver, headless, _log):
         _log("🗳 [Auto] Browser closed")
     except OSError:
         pass
-    except Exception:
-        pass
-    # Prevent undetected-chromedriver __del__ from double-quitting
-    try:
-        driver.service.process = None
-    except Exception:
-        pass
-    try:
-        driver._is_remote = False
     except Exception:
         pass
 

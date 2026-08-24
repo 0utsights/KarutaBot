@@ -107,7 +107,8 @@ pyinstaller --onefile --noconsole --name "Aeyori" \
 The generated executable is written to `dist/Aeyori.exe`. PyTorch and OCR make
 the binary large. A Windows reputation warning is not proof that a file is safe;
 prefer a release published by this repository and verify its SHA-256 digest when
-one is provided.
+one is provided. The current release digest is recorded in
+[`SHA256SUMS.txt`](SHA256SUMS.txt).
 
 ## Architecture
 
