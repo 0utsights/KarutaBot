@@ -2,11 +2,11 @@
 vote.py — Automatic top.gg vote pipeline
 
 Handles the full browser-based vote flow with zero user interaction:
-  1. Launch undetected-chromedriver (evades bot detection)
+  1. Launch an isolated browser session (which services may identify as automated)
   2. Navigate to discord.com/login → inject Discord token into localStorage
   3. Navigate to top.gg vote page → Discord OAuth auto-approves
   4. Click the vote button
-  5. Click reCAPTCHA checkbox if it appears
+  5. Stop and report when an interactive verification challenge appears
   6. Verify success → close browser
 
 Dependencies:
@@ -15,8 +15,8 @@ Dependencies:
 Notes:
   - Chrome/Chromium must be installed on the user's system.
   - The browser launches, votes, and quits in ~20-40 seconds.
-  - undetected-chromedriver patches Chrome to avoid Cloudflare/reCAPTCHA
-    fingerprinting, so the checkbox captcha almost always auto-passes.
+  - Browser automation may trigger Cloudflare, reCAPTCHA, or other verification.
+    A verification challenge is a signal to stop and complete the action manually.
 """
 
 import time
@@ -52,6 +52,8 @@ def _create_driver(headless=True):
     options.add_argument("--disable-dev-shm-usage")
     options.add_argument("--disable-gpu")
     options.add_argument("--window-size=1280,900")
+    # Compatibility flag for browser-driven testing. This is not a safety or
+    # anti-detection guarantee; services may still identify automated use.
     options.add_argument("--disable-blink-features=AutomationControlled")
     # Suppress noisy Chrome logs
     options.add_argument("--log-level=3")
@@ -128,7 +130,7 @@ def _inject_discord_token(driver, token):
     driver.get("https://discord.com/login")
     time.sleep(PAGE_LOAD_WAIT)
 
-    # Inject token via iframe trick (the standard approach — Discord clears
+    # Supply the user-provided token to this isolated browser session. Discord clears
     # localStorage on the login page, but iframes get their own copy)
     inject_js = """
     function injectToken(token) {
@@ -1300,11 +1302,15 @@ def _do_vote_attempt(token, headless, _log, attempt):
         time.sleep(4)
         _dump_page_debug(driver, f"post_vote_click_attempt{attempt}")
 
-        # Step 4: Handle captcha if present
-        _log("🗳 [Auto] Checking for captcha...")
-        captcha_ok = _handle_captcha(driver)
-        if not captcha_ok:
-            _log("⚠ [Auto] Captcha not solved — will retry")
+        # Step 4: Never automate an interactive verification challenge.
+        _log("🗳 [Auto] Checking for interactive verification...")
+        from selenium.webdriver.common.by import By
+        page_text = (driver.find_element(By.TAG_NAME, "body").text or "").lower()
+        challenge_visible = any(marker in page_text for marker in (
+            "solve the captcha", "verify you are human", "captcha to continue",
+        ))
+        if challenge_visible:
+            _log("⚠ [Auto] Verification required — stopping. Complete this action manually.")
             return "likely"
 
         # Step 5: Check for success

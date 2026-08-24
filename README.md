@@ -1,165 +1,138 @@
-<div align="center">
+# Aeyori
 
-# Aeyori — Karuta Bot Automation
+Aeyori is an open-source, user-operated workflow client for experimenting with
+OCR, scheduling, and configurable routines around the Discord card game Karuta.
+It is a personal project, not an official Karuta or Discord product.
 
-**Free open source macro for the Discord card game Karuta.**
+> [!IMPORTANT]
+> Aeyori automates a Discord user account. Discord prohibits self-bots and other
+> user-account automation, and Karuta may apply additional rules or penalties.
+> Using Aeyori on a live account can lead to restrictions or a permanent ban.
+> There is no "undetectable" mode and no guarantee of account safety.
 
-[**aeyori.com**](https://aeyori.com)
+The complete client is free. Optional support for the project does not unlock
+automation features or provide a gameplay advantage.
 
-**Karuta macro · Karuta automation · Karuta bot · Karuta Discord bot**
+## Project goals
 
-<br />
+- Keep the implementation inspectable and locally operated.
+- Make each workflow independently configurable and easy to stop.
+- Explore OCR-assisted classification and cooldown-aware scheduling.
+- Document platform risk instead of making anti-detection claims.
+- Keep functional access separate from optional financial support.
 
-<img src="screenshots/gui.webp" alt="Aeyori Main Interface" width="800" />
+## Current experiments
 
-</div>
+- Card-image OCR and wishlist-assisted review
+- User-configured drop and grab routines
+- Daily, work, visit, and vote workflow scheduling
+- Independent local profiles and activity logs
+- Conservative retry, cooldown, and stop controls
 
----
+These descriptions explain what the software does; they are not a promise that
+the workflows comply with Discord, Karuta, top.gg, or any other service.
 
-## What It Does
+## Before running it
 
-Aeyori is a Karuta macro that automates the repetitive parts of the game so you can focus on collecting.
+Read [SAFETY.md](SAFETY.md). In particular:
 
-- **Auto drop & grab** — drops cards on a timer and grabs any card matching your wishlist using real-time OCR
-- **Wishlist detection** — looks up wish counts via `k!lu` and only grabs cards people actually want
-- **Auto daily / quiz** — claims your daily reward and answers the quiz automatically
-- **Auto work & visit** — runs work and shrine visit commands on cooldown
-- **Auto vote** — completes the Karuta voting flow via headless browser
-- **Multi-account** — run multiple Discord accounts simultaneously, each with their own settings
-- **Burn tagging** — automatically tags low-value cards for burning
+- Use a separate test account only if the relevant services permit it.
+- Never share or commit a Discord token. Treat it like a password.
+- Keep credentials in the local configuration created by the application.
+- Start with one workflow, observe it, and use the stop control if behavior is
+  unexpected.
+- Do not use Aeyori to harass users, overwhelm services, evade enforcement, or
+  bypass access controls.
 
----
+## Run from source
 
-## Requirements
+Requirements:
 
-- Python 3.11 or higher
-- Windows recommended (Linux/Mac supported but limited)
-- A Discord account that plays Karuta
-- Your Discord token (see below)
+- Python 3.11 or newer
+- Windows is the best-tested platform
+- Roughly 1 GB of free space for EasyOCR and PyTorch dependencies
 
----
-
-## Installation
-
-**1. Clone the repo**
 ```bash
 git clone https://github.com/0utsights/KarutaBot.git
 cd KarutaBot
-```
-> Note: that's a zero in `0utsights`, not an O.
-
-**2. Create a virtual environment**
-```bash
 python -m venv venv
+```
 
+Activate the environment:
+
+```powershell
 # Windows
-venv\Scripts\activate
+.\venv\Scripts\Activate.ps1
+```
 
-# Linux / Mac
+```bash
+# Linux or macOS
 source venv/bin/activate
 ```
 
-**3. Install dependencies**
+Then install and run:
+
 ```bash
 pip install -r requirements.txt
-```
-
-> ⚠️ EasyOCR and PyTorch are large installs (~1GB). This will take a few minutes on first run.
-
-**4. Run**
-```bash
 python KarutaBot/main.py
 ```
 
----
-
-## Getting Your Discord Token
-
-Instructions are also available in the app. If you need help, reach out on Discord through my GitHub profile.
-
-1. Open Discord in your **browser** (not the desktop app)
-2. Press `F12` to open DevTools → go to the **Network** tab
-3. Press `Ctrl+R` to reload the page
-4. In the filter box, type `api`
-5. Click any request that appears in the list
-6. Under **Headers**, find the `authorization` field
-7. Copy that value — paste it into the Aeyori token field
-
----
+The application creates a local `config.json` on first launch. Aeyori needs
+user-supplied Discord credentials because it operates as a user-account client.
+The repository intentionally does not provide instructions for extracting tokens
+from browser traffic. If you choose to proceed, do not paste a token into support
+messages, screenshots, issue reports, or source control.
 
 ## Configuration
 
-On first launch a `config.json` is created. You can edit it directly or use the in-app settings panel.
-
-| Setting | Description |
-|---|---|
-| `token` | Your Discord token |
-| `channel_id` | The channel ID where you play Karuta |
-| `max_drops` | Max drops per day (default: 40) |
+| Setting | Purpose |
+| --- | --- |
+| `token` | Sensitive local Discord credential; never share it |
+| `channel_id` | Channel selected for the user-controlled workflow |
+| `max_drops` | User-defined daily action ceiling |
 | `vote_mode` | `auto`, `semi`, or `off` |
-| `auto_burn` | Automatically burn low-value cards |
-| `macros` | Toggle individual automations on/off |
+| `auto_burn` | Optional low-value-card tagging workflow |
+| `macros` | Independent switches for each routine |
 
----
+## Build a Windows executable
 
-## Packaging as a Windows Exe
-
-**1. Install PyInstaller**
 ```bash
 pip install pyinstaller
+pyinstaller --onefile --noconsole --name "Aeyori" \
+  --icon=KarutaBot/icon.ico \
+  --collect-all easyocr --collect-all torch \
+  KarutaBot/launcher.py
 ```
 
-**2. Build**
-```bash
-pyinstaller --onefile --noconsole --name "Aeyori" --icon=KarutaBot/icon.ico --collect-all easyocr --collect-all torch KarutaBot/launcher.py
-```
+The generated executable is written to `dist/Aeyori.exe`. PyTorch and OCR make
+the binary large. A Windows reputation warning is not proof that a file is safe;
+prefer a release published by this repository and verify its SHA-256 digest when
+one is provided.
 
-> ⚠️ Build takes several minutes. Output exe is ~250MB due to PyTorch being bundled. Windows will show a SmartScreen warning on first launch — click **More info → Run anyway**.
+## Architecture
 
-**3. Output**
-```
-dist/Aeyori.exe
-```
-
----
-
-## How the Karuta OCR Works
-
-When Karuta drops cards, Aeyori:
-
-1. Downloads the drop image from Discord
-2. Crops each card into name, series, and print number regions
-3. Runs EasyOCR to extract text
-4. Cleans OCR noise with regex
-5. Sends `k!lu <name>` to look up wish counts
-6. Fuzzy-matches against the detected series name if multiple results return
-7. Grabs the highest-wished card — skips if no wishlist matches
-
----
-
-## Project Structure
-
-```
+```text
 KarutaBot/
-├── main.py        — entry point
-├── gui.py         — main window, account panels, settings
-├── bot.py         — Discord automation loop
-├── ocr.py         — EasyOCR card image parser
-├── vote.py        — Selenium voting automation
-├── config.py      — constants, config load/save
-├── launcher.py    — PyInstaller entry point
-└── icon.ico       — app icon
-requirements.txt
+├── main.py       application entry point
+├── gui.py        local controls, profiles, and activity display
+├── bot.py        workflow coordination and cooldown handling
+├── ocr.py        local card-image OCR pipeline
+├── vote.py       optional browser-assisted vote workflow
+├── config.py     defaults and local configuration
+└── launcher.py   packaged application entry point
 ```
 
----
+## Responsible contributions
 
-## Want the Managed Version?
+Changes that improve transparency, credential handling, stop controls,
+observability, testability, and conservative defaults are welcome. Contributions
+whose main purpose is detection evasion, CAPTCHA bypass, rate-limit bypass, or
+concealing automated behavior are out of scope.
 
-[aeyori.com](https://aeyori.com) — pre-packaged Windows exe, user dashboard, no Python setup needed. Free.
+## Availability and support
 
----
+- Source and functional features: free
+- Managed download and dashboard: [aeyori.com](https://aeyori.com)
+- Optional supporter benefits: cosmetic and community recognition only
 
-## Disclaimer
-
-Aeyori automates a user account (selfbot), which is against Discord's Terms of Service. Use at your own risk.
+See [SAFETY.md](SAFETY.md) for the full risk statement.

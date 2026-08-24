@@ -344,13 +344,13 @@ async def automation_loop(app, client, channel_id):
 
             # ── Build macro execution order ──────────────────────────────
             # Drop has an 80% chance of going first (it's the most time-sensitive
-            # command). The remaining macros are shuffled randomly to humanize the
-            # pattern. Grab always immediately follows drop — that's handled inside
+            # command). The remaining workflows are shuffled to avoid bursty execution;
+            # this pacing is not an anti-detection or account-safety guarantee.
+            # Grab always immediately follows drop — that's handled inside
             # do_drop itself.
             #
             # Secondary macros (vote, daily, work, visit) run in a randomized order
-            # with a short random pause between each to avoid identical timing
-            # fingerprints across multiple accounts running simultaneously.
+            # with a short random pause between each to reduce bursty requests.
 
             drop_goes_first = random.random() < 0.80
 
@@ -411,7 +411,7 @@ async def automation_loop(app, client, channel_id):
                 drop_result = await _run_drop()
                 await _run_secondaries()
             else:
-                app.ui_log("🎲 Humanized order: running secondary commands before drop this cycle")
+                app.ui_log("🎲 Alternate order: running secondary commands before drop this cycle")
                 await _run_secondaries()
                 drop_result = await _run_drop()
 
