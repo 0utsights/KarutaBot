@@ -1,30 +1,46 @@
 import sys
-import subprocess
-import importlib
 import os
+import importlib
 import multiprocessing
 multiprocessing.freeze_support()
 
-IS_FROZEN = getattr(sys, "frozen", False)
+# ─────────────────────────────────────────────────────────
+#  Single-instance guard — exit immediately if already running
+# ─────────────────────────────────────────────────────────
+import ctypes
+_mutex = ctypes.windll.kernel32.CreateMutexW(None, False, "AeyoriAppMutex")
+if ctypes.windll.kernel32.GetLastError() == 183:  # ERROR_ALREADY_EXISTS
+    sys.exit(0)
 
 # ─────────────────────────────────────────────────────────
-#  This is the ENTRY POINT that PyInstaller compiles.
-#  It checks/installs dependencies silently, shows a
-#  friendly loading screen, then launches the real app.
+#  Find real Python (not the frozen exe)
 # ─────────────────────────────────────────────────────────
+def _find_python():
+    """Return path to a real python.exe, not the frozen exe."""
+    # If not frozen, sys.executable is already Python
+    if not getattr(sys, "frozen", False):
+        return sys.executable
+    # Search PATH for python
+    import shutil
+    for name in ("python", "python3", "python.exe", "python3.exe"):
+        p = shutil.which(name)
+        if p and p != sys.executable:
+            return p
+    return None
+
+PYTHON = _find_python()
 
 REQUIRED_PACKAGES = [
-    ("discord",    "discord.py-self"),
-    ("requests",   "requests"),
-    ("PIL",        "Pillow"),
-    ("cv2",        "opencv-python-headless"),
-    ("torch",      "torch"),
-    ("torchvision","torchvision"),
-    ("easyocr",    "easyocr"),
+    ("discord",     "discord.py-self"),
+    ("requests",    "requests"),
+    ("PIL",         "Pillow"),
+    ("cv2",         "opencv-python-headless"),
+    ("torch",       "torch"),
+    ("torchvision", "torchvision"),
+    ("easyocr",     "easyocr"),
 ]
 
-def check_and_install():
-    """Returns list of packages that needed installing."""
+def check_needed():
     needed = []
     for import_name, pip_name in REQUIRED_PACKAGES:
         try:
@@ -34,41 +50,36 @@ def check_and_install():
     return needed
 
 def install_package(pip_name, log_callback):
-    if IS_FROZEN:
-        log_callback(
-            "❌ Packaged build is missing required modules and cannot self-install them."
-        )
-        log_callback(
-            "   Rebuild the EXE with bundled OCR dependencies instead of excluding them."
-        )
+    if not PYTHON:
+        log_callback("❌ Python not found on PATH — cannot install packages.")
         return False
-
+    import subprocess
     log_callback(f"Installing {pip_name}...")
     result = subprocess.run(
-        [sys.executable, "-m", "pip", "install", pip_name, "--quiet"],
+        [PYTHON, "-m", "pip", "install", pip_name, "--quiet"],
         capture_output=True, text=True
     )
     if result.returncode != 0:
-        log_callback(f"❌ Failed to install {pip_name}: {result.stderr}")
+        log_callback(f"❌ Failed: {result.stderr.strip()}")
         return False
-    log_callback(f"✅ {pip_name} installed!")
+    log_callback(f"✅ {pip_name} installed")
     return True
 
 
 # ─────────────────────────────────────────────────────────
-#  Loading Screen (shown while installing)
+#  Loading Screen
 # ─────────────────────────────────────────────────────────
 import tkinter as tk
 from tkinter import ttk
 
 C = {
-    "bg":      "#1e1f22",
-    "card":    "#2b2d31",
-    "accent":  "#5865f2",
-    "green":   "#23a55a",
-    "red":     "#f23f43",
-    "text":    "#dbdee1",
-    "muted":   "#949ba4",
+    "bg":    "#1e1f22",
+    "card":  "#2b2d31",
+    "accent":"#5865f2",
+    "green": "#23a55a",
+    "red":   "#f23f43",
+    "text":  "#dbdee1",
+    "muted": "#949ba4",
 }
 
 class LoadingScreen:
@@ -79,39 +90,27 @@ class LoadingScreen:
         self.root.resizable(False, False)
         self.root.configure(bg=C["bg"])
         self.root.eval("tk::PlaceWindow . center")
-
-        # Prevent closing during install
         self.root.protocol("WM_DELETE_WINDOW", lambda: None)
-
         self._build()
 
     def _build(self):
         tk.Label(self.root, text="🃏", font=("Helvetica", 36),
                  bg=C["bg"], fg=C["accent"]).pack(pady=(28, 4))
-
         tk.Label(self.root, text="Aeyori", font=("Helvetica", 18, "bold"),
                  bg=C["bg"], fg=C["text"]).pack()
-
         self.status_label = tk.Label(self.root, text="Checking requirements...",
-                                      font=("Helvetica", 10), bg=C["bg"], fg=C["muted"])
+                                     font=("Helvetica", 10), bg=C["bg"], fg=C["muted"])
         self.status_label.pack(pady=(16, 6))
-
-        # Progress bar
         style = ttk.Style()
         style.theme_use("clam")
-        style.configure("Accent.Horizontal.TProgressbar",
-                         troughcolor=C["card"],
-                         background=C["accent"],
-                         bordercolor=C["card"],
-                         lightcolor=C["accent"],
-                         darkcolor=C["accent"])
-
-        self.progress = ttk.Progressbar(self.root, style="Accent.Horizontal.TProgressbar",
-                                         orient="horizontal", length=300, mode="determinate")
+        style.configure("A.Horizontal.TProgressbar",
+                        troughcolor=C["card"], background=C["accent"],
+                        bordercolor=C["card"], lightcolor=C["accent"], darkcolor=C["accent"])
+        self.progress = ttk.Progressbar(self.root, style="A.Horizontal.TProgressbar",
+                                        orient="horizontal", length=300, mode="determinate")
         self.progress.pack(pady=4)
-
-        self.log_label = tk.Label(self.root, text="",
-                                   font=("Courier", 8), bg=C["bg"], fg=C["muted"])
+        self.log_label = tk.Label(self.root, text="", font=("Courier", 8),
+                                  bg=C["bg"], fg=C["muted"])
         self.log_label.pack(pady=(8, 0))
 
     def set_status(self, text):
@@ -119,7 +118,7 @@ class LoadingScreen:
         self.root.update()
 
     def set_log(self, text):
-        self.log_label.config(text=text)
+        self.log_label.config(text=text[-60:])  # truncate long lines
         self.root.update()
 
     def set_progress(self, value):
@@ -140,49 +139,36 @@ class LoadingScreen:
 
 
 # ─────────────────────────────────────────────────────────
-#  Main Bootstrap Logic
+#  Main
 # ─────────────────────────────────────────────────────────
 def main():
     screen = LoadingScreen()
-    all_ok = True
     screen.set_status("Checking requirements...")
     screen.set_progress(10)
     screen.root.update()
 
-    needed = check_and_install()
+    needed = check_needed()
 
     if not needed:
-        # All good, go straight in
         screen.set_status("All good! Launching...")
         screen.set_progress(100)
         screen.root.update()
         screen.root.after(600, screen.close)
         screen.root.mainloop()
     else:
-        # Need to install some packages
-        screen.set_status(f"First time setup — installing {len(needed)} package(s) (may take a few minutes)...")
+        screen.set_status(f"First time setup — installing {len(needed)} package(s)...")
         screen.set_progress(20)
-
         step = 70 / len(needed)
         current = 20
-        all_ok = True
 
         for import_name, pip_name in needed:
             screen.set_log(f"Installing {pip_name}...")
             ok = install_package(pip_name, screen.set_log)
             if not ok:
-                if IS_FROZEN:
-                    missing = ", ".join(name for _, name in needed)
-                    screen.show_error(
-                        "This EXE was built without required modules.\n"
-                        f"Missing: {missing}\n\n"
-                        "Use a build that bundles OCR dependencies."
-                    )
-                else:
-                    screen.show_error(
-                        f"Could not install '{pip_name}'.\n"
-                        "Please check your internet connection and try again."
-                    )
+                screen.show_error(
+                    f"Could not install '{pip_name}'.\n"
+                    "Please check your internet connection and try again."
+                )
                 return
             current += step
             screen.set_progress(int(current))
@@ -194,11 +180,7 @@ def main():
         screen.root.after(800, screen.close)
         screen.root.mainloop()
 
-    if not all_ok:
-        return
-
-    # ── Launch the real app ──
-    import main  # your main app file
+    import main
     main.launch()
 
 
