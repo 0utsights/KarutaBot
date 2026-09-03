@@ -529,9 +529,15 @@ async def _do_vote_auto(app, client, channel):
     loop = asyncio.get_event_loop()
     try:
         from vote import auto_vote
-    except ImportError:
-        app.ui_log("❌ [Auto] vote.py or Selenium is unavailable")
-        app.ui_log("   Run: pip install selenium")
+    except ImportError as exc:
+        import sys
+        app.ui_log(f"❌ [Auto] vote.py or Selenium is unavailable: {exc}")
+        if getattr(sys, "frozen", False):
+            app.ui_log(
+                "   This packaged build is incomplete; install a newer Aeyori build."
+            )
+        else:
+            app.ui_log("   Run: pip install selenium")
         return
 
     try:

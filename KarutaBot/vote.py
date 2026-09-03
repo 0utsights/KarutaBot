@@ -43,8 +43,9 @@ def _create_driver(headless=True):
     or Selenium's Chrome driver is unavailable.
     """
     from selenium import webdriver
+    from selenium.webdriver.chrome.options import Options
 
-    options = webdriver.ChromeOptions()
+    options = Options()
     if headless:
         options.add_argument("--headless=new")
     options.add_argument("--no-sandbox")
@@ -959,6 +960,10 @@ def auto_vote(token, ui_log=None, headless=True):
             return True
         if result == "verification_required":
             return False
+        if result == "dependency_unavailable":
+            # Retrying cannot repair a missing module in this process (and a
+            # frozen executable cannot install packages into itself).
+            return False
         if result == "likely":
             if attempt == 1:
                 _log("🗳 [Auto] Vote unconfirmed — retrying to verify...")
@@ -982,13 +987,20 @@ def _do_vote_attempt(token, headless, _log, attempt):
             driver = _create_driver(headless=headless)
         except ImportError as ie:
             import sys
-            py = sys.executable
             _log(f"❌ [Auto] Import failed: {ie}")
-            _log(f'   Run: & "{py}" -m pip install selenium')
-            return "failed"
+            if getattr(sys, "frozen", False):
+                _log(
+                    "   This packaged build is incomplete; install a newer Aeyori build."
+                )
+            else:
+                _log(f'   Run: & "{sys.executable}" -m pip install selenium')
+            return "dependency_unavailable"
         except Exception as exc:
             _log(f"❌ [Auto] Could not launch Chrome: {exc}")
-            _log("   Make sure Chrome or Chromium is installed on this system.")
+            _log(
+                "   Make sure Chrome is installed and Selenium Manager can obtain "
+                "a compatible driver."
+            )
             return "failed"
 
         # Step 1: Login to Discord via token injection

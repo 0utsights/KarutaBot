@@ -21,7 +21,18 @@ REQUIRED_PACKAGES = [
     ("torch",      "torch"),
     ("torchvision","torchvision"),
     ("easyocr",    "easyocr"),
+    ("selenium",   "selenium"),
 ]
+
+# Selenium loads several WebDriver modules lazily. Importing only the top-level
+# package is therefore not enough to prove that a frozen build is complete.
+FROZEN_SELENIUM_MODULES = (
+    "selenium.webdriver.chrome.options",
+    "selenium.webdriver.common.by",
+    "selenium.webdriver.common.selenium_manager",
+    "selenium.webdriver.support.expected_conditions",
+    "selenium.webdriver.support.ui",
+)
 
 def check_and_install():
     """Returns list of packages that needed installing."""
@@ -31,6 +42,13 @@ def check_and_install():
             importlib.import_module(import_name)
         except ImportError:
             needed.append((import_name, pip_name))
+
+    if IS_FROZEN and ("selenium", "selenium") not in needed:
+        try:
+            for module_name in FROZEN_SELENIUM_MODULES:
+                importlib.import_module(module_name)
+        except ImportError:
+            needed.append(("selenium", "selenium"))
     return needed
 
 def install_package(pip_name, log_callback):
@@ -39,7 +57,7 @@ def install_package(pip_name, log_callback):
             "❌ Packaged build is missing required modules and cannot self-install them."
         )
         log_callback(
-            "   Rebuild the EXE with bundled OCR dependencies instead of excluding them."
+            "   Rebuild the EXE with all required application dependencies bundled."
         )
         return False
 
@@ -176,7 +194,7 @@ def main():
                     screen.show_error(
                         "This EXE was built without required modules.\n"
                         f"Missing: {missing}\n\n"
-                        "Use a build that bundles OCR dependencies."
+                        "Use a complete build made from KarutaBot/Aeyori.spec."
                     )
                 else:
                     screen.show_error(
