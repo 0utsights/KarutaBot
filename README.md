@@ -108,6 +108,12 @@ including the bundled Selenium Manager executable used for ChromeDriver setup.
 Do not replace the spec build with a bare `pyinstaller KarutaBot/launcher.py`
 command, because Selenium loads parts of its WebDriver stack dynamically.
 
+Before publishing, run the actual generated executable with
+`dist\Aeyori.exe --check-bundle bundle-check.json` and inspect the JSON report
+for `"frozen": true` and `"ok": true`. This checks runtime dependency imports,
+Chrome WebDriver modules, and the bundled Selenium Manager executable without
+opening the UI, logging in, or voting. A failed check exits with status 1.
+
 Chrome must still be installed on the target computer. Selenium Manager normally
 finds Chrome and obtains a matching ChromeDriver automatically, so users do not
 need to copy Python modules or a driver beside `Aeyori.exe`. The first driver

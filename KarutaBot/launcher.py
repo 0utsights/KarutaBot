@@ -220,5 +220,34 @@ def main():
     main.launch()
 
 
+def check_bundle(report_path):
+    """Check the shipped runtime without opening the UI or contacting services."""
+    import json
+    from pathlib import Path
+
+    report = {"frozen": IS_FROZEN, "ok": False}
+    try:
+        missing = check_and_install()
+        if missing:
+            raise RuntimeError(f"Missing dependencies: {missing}")
+        for module_name in FROZEN_SELENIUM_MODULES:
+            importlib.import_module(module_name)
+        from selenium.webdriver.chrome.options import Options
+        from selenium.webdriver.chrome.webdriver import WebDriver
+        from selenium.webdriver.common.selenium_manager import SeleniumManager
+
+        Options().to_capabilities()
+        manager = SeleniumManager()._get_binary()
+        if not manager.is_file():
+            raise RuntimeError("Selenium Manager binary is missing")
+        report.update(ok=True, selenium_manager=manager.name)
+    except Exception as exc:
+        report["error"] = f"{type(exc).__name__}: {exc}"
+    Path(report_path).write_text(json.dumps(report, indent=2), encoding="utf-8")
+    return 0 if report["ok"] else 1
+
+
 if __name__ == "__main__":
+    if len(sys.argv) == 3 and sys.argv[1] == "--check-bundle":
+        sys.exit(check_bundle(sys.argv[2]))
     main()
