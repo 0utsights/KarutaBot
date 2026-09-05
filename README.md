@@ -97,15 +97,30 @@ messages, screenshots, issue reports, or source control.
 ## Build a Windows executable
 
 ```bash
-pip install pyinstaller
-pyinstaller --onefile --noconsole --name "Aeyori" \
-  --icon=KarutaBot/icon.ico \
-  --collect-all easyocr --collect-all torch \
-  KarutaBot/launcher.py
+pip install -r requirements.txt
+pyinstaller --clean --noconfirm KarutaBot/Aeyori.spec
 ```
 
 The generated executable is written to `dist/Aeyori.exe`. PyTorch and OCR make
-the binary large. A Windows reputation warning is not proof that a file is safe;
+the binary large. The spec file is the canonical release configuration; it
+collects EasyOCR, PyTorch, TorchVision, and all Selenium modules and data,
+including the bundled Selenium Manager executable used for ChromeDriver setup.
+Do not replace the spec build with a bare `pyinstaller KarutaBot/launcher.py`
+command, because Selenium loads parts of its WebDriver stack dynamically.
+
+Before publishing, run the actual generated executable with
+`dist\Aeyori.exe --check-bundle bundle-check.json` and inspect the JSON report
+for `"frozen": true` and `"ok": true`. This checks runtime dependency imports,
+Chrome WebDriver modules, and the bundled Selenium Manager executable without
+opening the UI, logging in, or voting. A failed check exits with status 1.
+
+Chrome must still be installed on the target computer. Selenium Manager normally
+finds Chrome and obtains a matching ChromeDriver automatically, so users do not
+need to copy Python modules or a driver beside `Aeyori.exe`. The first driver
+setup may require network access; managed or offline computers can instead use a
+compatible driver already available through Selenium Manager's cache or `PATH`.
+
+A Windows reputation warning is not proof that a file is safe;
 prefer a release published by this repository and verify its SHA-256 digest when
 one is provided. The current release digest is recorded in
 [`SHA256SUMS.txt`](SHA256SUMS.txt).

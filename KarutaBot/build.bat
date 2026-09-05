@@ -1,13 +1,13 @@
 @echo off
-pyinstaller ^
-  --onefile ^
-  --noconsole ^
-  --name "Aeyori" ^
-  --icon=icon.ico ^
-  --collect-all easyocr ^
-  --collect-all torch ^
-  --collect-all torchvision ^
-  launcher.py
+pushd "%~dp0.."
+pyinstaller --clean --noconfirm KarutaBot\Aeyori.spec
+set "BUILD_EXIT_CODE=%ERRORLEVEL%"
+popd
 echo.
-echo Build complete. Check dist\Aeyori.exe
+if %BUILD_EXIT_CODE% equ 0 (
+  echo Build complete. Check dist\Aeyori.exe
+) else (
+  echo Build failed with exit code %BUILD_EXIT_CODE%.
+)
 pause
+exit /b %BUILD_EXIT_CODE%

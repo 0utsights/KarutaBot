@@ -21,7 +21,18 @@ REQUIRED_PACKAGES = [
     ("torch",      "torch"),
     ("torchvision","torchvision"),
     ("easyocr",    "easyocr"),
+    ("selenium",   "selenium"),
 ]
+
+# Selenium loads several WebDriver modules lazily. Importing only the top-level
+# package is therefore not enough to prove that a frozen build is complete.
+FROZEN_SELENIUM_MODULES = (
+    "selenium.webdriver.chrome.options",
+    "selenium.webdriver.common.by",
+    "selenium.webdriver.common.selenium_manager",
+    "selenium.webdriver.support.expected_conditions",
+    "selenium.webdriver.support.ui",
+)
 
 def check_and_install():
     """Returns list of packages that needed installing."""
@@ -31,6 +42,13 @@ def check_and_install():
             importlib.import_module(import_name)
         except ImportError:
             needed.append((import_name, pip_name))
+
+    if IS_FROZEN and ("selenium", "selenium") not in needed:
+        try:
+            for module_name in FROZEN_SELENIUM_MODULES:
+                importlib.import_module(module_name)
+        except ImportError:
+            needed.append(("selenium", "selenium"))
     return needed
 
 def install_package(pip_name, log_callback):
@@ -39,7 +57,7 @@ def install_package(pip_name, log_callback):
             "❌ Packaged build is missing required modules and cannot self-install them."
         )
         log_callback(
-            "   Rebuild the EXE with bundled OCR dependencies instead of excluding them."
+            "   Rebuild the EXE with all required application dependencies bundled."
         )
         return False
 
@@ -176,7 +194,7 @@ def main():
                     screen.show_error(
                         "This EXE was built without required modules.\n"
                         f"Missing: {missing}\n\n"
-                        "Use a build that bundles OCR dependencies."
+                        "Use a complete build made from KarutaBot/Aeyori.spec."
                     )
                 else:
                     screen.show_error(
@@ -202,5 +220,34 @@ def main():
     main.launch()
 
 
+def check_bundle(report_path):
+    """Check the shipped runtime without opening the UI or contacting services."""
+    import json
+    from pathlib import Path
+
+    report = {"frozen": IS_FROZEN, "ok": False}
+    try:
+        missing = check_and_install()
+        if missing:
+            raise RuntimeError(f"Missing dependencies: {missing}")
+        for module_name in FROZEN_SELENIUM_MODULES:
+            importlib.import_module(module_name)
+        from selenium.webdriver.chrome.options import Options
+        from selenium.webdriver.chrome.webdriver import WebDriver
+        from selenium.webdriver.common.selenium_manager import SeleniumManager
+
+        Options().to_capabilities()
+        manager = SeleniumManager()._get_binary()
+        if not manager.is_file():
+            raise RuntimeError("Selenium Manager binary is missing")
+        report.update(ok=True, selenium_manager=manager.name)
+    except Exception as exc:
+        report["error"] = f"{type(exc).__name__}: {exc}"
+    Path(report_path).write_text(json.dumps(report, indent=2), encoding="utf-8")
+    return 0 if report["ok"] else 1
+
+
 if __name__ == "__main__":
+    if len(sys.argv) == 3 and sys.argv[1] == "--check-bundle":
+        sys.exit(check_bundle(sys.argv[2]))
     main()

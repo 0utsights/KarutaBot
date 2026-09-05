@@ -4,6 +4,7 @@ build/
 KarutaBot/dist/
 KarutaBot/build/
 KarutaBot/*.spec
+!KarutaBot/Aeyori.spec
 config.json
 ocr_debug
 __pycache__/
